@@ -4,17 +4,20 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from crforge_gym.replay import (
     REPLAY_SCHEMA_VERSION,
     ReplayRequest,
+    _build_policy_env,
     _checkpoint_timesteps,
     _frame_payload,
     _observed_training_timesteps,
     _resolve_checkpoint,
     _resolve_league_opponent,
+    _validate_observation_width,
     _validate_request,
     list_replays,
     load_replay,
@@ -231,3 +234,30 @@ def test_list_and_load_replays_do_not_accept_paths(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="replay_id"):
         load_replay(tmp_path, "../manifest")
 
+
+
+def test_replay_env_reproduces_the_trainer_observation_width() -> None:
+    """A checkpoint trained with match memory needs the same wrapper here."""
+    from crforge_gym import CRForgeEnv
+    from crforge_gym.env import OBS_SIZE
+    from crforge_gym.match_memory import MEMORY_FEATURE_COUNT
+
+    base_env = CRForgeEnv(binary_obs=False)
+    try:
+        plain = _build_policy_env(base_env, match_memory=False)
+        with_memory = _build_policy_env(base_env, match_memory=True)
+    finally:
+        base_env.close()
+
+    assert plain.observation_space.shape == (OBS_SIZE,)
+    assert with_memory.observation_space.shape == (OBS_SIZE + MEMORY_FEATURE_COUNT,)
+
+
+def test_observation_width_mismatch_points_at_the_run_config() -> None:
+    model = SimpleNamespace(observation_space=SimpleNamespace(shape=(1422,)))
+    env = SimpleNamespace(observation_space=SimpleNamespace(shape=(1153,)))
+
+    with pytest.raises(ValueError, match="match_memory"):
+        _validate_observation_width(model, env)
+
+    _validate_observation_width(model, SimpleNamespace(observation_space=SimpleNamespace(shape=(1422,))))
