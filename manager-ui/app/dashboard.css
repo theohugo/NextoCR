@@ -1619,6 +1619,44 @@ td:first-child {
   background: linear-gradient(90deg, var(--lime) var(--health), rgba(255, 255, 255, 0.1) var(--health));
 }
 
+/* Hover label. The native title tooltip waits about a second and shows the raw
+   internal name, which is useless while a replay is playing, so the full name
+   is rendered immediately instead. */
+.arena-entity::before,
+.arena-tower::before {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  z-index: 30;
+  padding: 3px 7px;
+  content: attr(data-label);
+  transform: translateX(-50%);
+  transition: opacity 90ms ease;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  color: #f2f7ff;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 6px;
+  background: rgba(11, 18, 32, 0.96);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.arena-entity:hover,
+.arena-tower:hover {
+  /* Lift the hovered unit so its label is never covered by nearby units. */
+  z-index: 25;
+}
+
+.arena-entity:hover::before,
+.arena-tower:hover::before {
+  opacity: 1;
+}
+
 .arena-empty-copy {
   position: absolute;
   inset: 0;
