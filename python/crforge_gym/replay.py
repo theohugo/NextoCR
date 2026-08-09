@@ -183,15 +183,14 @@ def generate_replay(
         opponent=recording_opponent,
         binary_obs=False,
     )
-    env = ExactDiscreteActionWrapper(
-        StaticObservationPreprocessingWrapper(FlattenedObsWrapper(base_env))
-    )
+    env = _build_policy_env(base_env, match_memory=bool(config.get("match_memory", False)))
 
     frames: list[dict[str, Any]] = []
     total_reward = 0.0
     steps = 0
     outcome = "unknown"
     try:
+        _validate_observation_width(model, env)
         observation, _ = env.reset(seed=seed)
         initial_raw = _require_raw_observation(base_env)
         frames.append(_frame_payload(initial_raw, step=0, reward=0.0))
@@ -357,6 +356,39 @@ def load_replay(run_dir: str | os.PathLike[str], replay_id: str) -> dict[str, An
     if data.get("replayId") != safe_id or data.get("schemaVersion") != REPLAY_SCHEMA_VERSION:
         raise ValueError(f"invalid replay document: {path}")
     return data
+
+
+def _build_policy_env(base_env: CRForgeEnv, *, match_memory: bool) -> Any:
+    """Rebuild the trainer's observation stack for one evaluation episode.
+
+    Every wrapper that widens the observation has to be reapplied here from the
+    run configuration: a checkpoint trained with match memory cannot read an
+    observation without it, and the mismatch only surfaces as an opaque SB3
+    shape error at prediction time.
+    """
+
+    env = StaticObservationPreprocessingWrapper(FlattenedObsWrapper(base_env))
+    if match_memory:
+        from crforge_gym.match_memory import MatchMemoryObservationWrapper
+
+        # Same order as the trainer: above the static preprocessing, which
+        # requires the exact legacy width, and below the action wrapper.
+        env = MatchMemoryObservationWrapper(env)
+    return ExactDiscreteActionWrapper(env)
+
+
+def _validate_observation_width(model: Any, env: Any) -> None:
+    """Report the run-level cause instead of a bare shape error."""
+
+    expected = tuple(getattr(model.observation_space, "shape", None) or ())
+    actual = tuple(getattr(env.observation_space, "shape", None) or ())
+    if expected == actual:
+        return
+    raise ValueError(
+        f"checkpoint expects observation shape {expected} but the replay environment "
+        f"produces {actual}; the run config.json must describe the checkpoint that is "
+        "being replayed, in particular 'match_memory'"
+    )
 
 
 def _validate_request(

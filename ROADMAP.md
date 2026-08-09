@@ -14,7 +14,8 @@ data-driven simulator rather than a mock Gym wrapper or a new physics implementa
 
 Deliverables:
 
-- [x] Preserve upstream history, license, and NOTICE in a public `NextoCR` fork.
+- [x] Preserve upstream history, license, and NOTICE in the public standalone `NextoCR` repository,
+      originally created as a fork of `crforge`.
 - [x] Verify the complete Gradle build on Java 17.
 - [x] Document architecture, source selection, data provenance, and legal scope.
 - [x] Add a dependency-free card catalog audit.
