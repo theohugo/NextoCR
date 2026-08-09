@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "purpose": "Reviewed playable-card mappings absent from docs/card_tracker.md",
+  "mappings": [
+    {
+      "officialName": "Cannon Cart",
+      "simulatorId": "movingcannon",
+      "trackerStatus": "done",
+      "kind": "troop",
+      "evidence": "data/src/main/resources/cards/cards.json implements the moving-to-broken cannon transformation"
+    },
+    {
+      "officialName": "Three Musketeers",
+      "simulatorId": "threemusketeers",
+      "trackerStatus": "done",
+      "kind": "troop",
+      "evidence": "data/src/main/resources/cards/cards.json contains the playable 9-elixir three-unit card"
+    }
+  ]
+}
