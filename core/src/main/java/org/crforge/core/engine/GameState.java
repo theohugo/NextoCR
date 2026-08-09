@@ -46,8 +46,7 @@ public class GameState {
   @Setter private Arena arena;
   @Setter private DeathHandler deathHandler;
   private int frameCount;
-  private boolean gameOver;
-  private Team winner;
+  private GameOutcome outcome;
 
   public GameState() {
     this.entities = new ArrayList<>();
@@ -65,8 +64,7 @@ public class GameState {
     this.entityById = Collections.emptyMap();
     this.nextGameObjectId = 1;
     this.frameCount = 0;
-    this.gameOver = false;
-    this.winner = null;
+    this.outcome = GameOutcome.ONGOING;
   }
 
   public void spawnEntity(Entity entity) {
@@ -178,9 +176,23 @@ public class GameState {
     }
 
     if (tower.isCrownTower()) {
-      gameOver = true;
-      winner = tower.getTeam().opposite();
+      finish(tower.getTeam().opposite());
     }
+  }
+
+  /** Records the terminal outcome exactly once. A null winner represents a true draw. */
+  void finish(Team winningTeam) {
+    if (outcome == GameOutcome.ONGOING) {
+      outcome = GameOutcome.fromWinner(winningTeam);
+    }
+  }
+
+  public boolean isGameOver() {
+    return outcome.isTerminal();
+  }
+
+  public Team getWinner() {
+    return outcome.winner();
   }
 
   public void incrementFrame() {
@@ -344,7 +356,6 @@ public class GameState {
     entityById = Collections.emptyMap();
     nextGameObjectId = 1;
     frameCount = 0;
-    gameOver = false;
-    winner = null;
+    outcome = GameOutcome.ONGOING;
   }
 }

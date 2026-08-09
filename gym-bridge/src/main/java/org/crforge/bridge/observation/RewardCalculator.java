@@ -2,6 +2,7 @@
 package org.crforge.bridge.observation;
 
 import org.crforge.bridge.dto.RewardDTO;
+import org.crforge.core.engine.GameOutcome;
 import org.crforge.core.engine.GameState;
 import org.crforge.core.entity.structure.Tower;
 import org.crforge.core.player.Elixir;
@@ -41,6 +42,7 @@ public class RewardCalculator {
   private int prevRedTowerHp;
   private int prevBlueCrowns;
   private int prevRedCrowns;
+  private boolean terminalRewardEmitted;
 
   // Player references for elixir checking
   private Player bluePlayer;
@@ -60,6 +62,7 @@ public class RewardCalculator {
     prevRedTowerHp = getTotalTowerHp(state, Team.RED);
     prevBlueCrowns = state.getCrownCount(Team.BLUE);
     prevRedCrowns = state.getCrownCount(Team.RED);
+    terminalRewardEmitted = false;
     this.bluePlayer = bluePlayer;
     this.redPlayer = redPlayer;
   }
@@ -107,19 +110,25 @@ public class RewardCalculator {
     redReward += TIME_PENALTY;
 
     // Win/loss/draw rewards
-    if (state.isGameOver()) {
-      Team winner = state.getWinner();
-      if (winner == Team.BLUE) {
-        blueReward += WIN_REWARD;
-        redReward += LOSS_REWARD;
-      } else if (winner == Team.RED) {
-        redReward += WIN_REWARD;
-        blueReward += LOSS_REWARD;
-      } else {
-        // Draw: penalize both players to discourage passive play
-        blueReward += DRAW_PENALTY;
-        redReward += DRAW_PENALTY;
+    GameOutcome outcome = state.getOutcome();
+    if (outcome.isTerminal() && !terminalRewardEmitted) {
+      switch (outcome) {
+        case BLUE_WIN -> {
+          blueReward += WIN_REWARD;
+          redReward += LOSS_REWARD;
+        }
+        case RED_WIN -> {
+          redReward += WIN_REWARD;
+          blueReward += LOSS_REWARD;
+        }
+        case DRAW -> {
+          // Draw: penalize both players to discourage passive play
+          blueReward += DRAW_PENALTY;
+          redReward += DRAW_PENALTY;
+        }
+        case ONGOING -> throw new IllegalStateException("Terminal outcome cannot be ONGOING");
       }
+      terminalRewardEmitted = true;
     }
 
     // Update snapshots

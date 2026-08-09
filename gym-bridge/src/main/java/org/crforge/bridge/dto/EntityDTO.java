@@ -26,6 +26,7 @@ package org.crforge.bridge.dto;
 public record EntityDTO(
     long id,
     String name,
+    int identityId,
     String team,
     String entityType,
     String movementType,

@@ -8,6 +8,7 @@ import org.crforge.bridge.dto.ObservationDTO;
 import org.crforge.bridge.dto.PlayerObsDTO;
 import org.crforge.bridge.dto.TowerDTO;
 import org.crforge.core.card.Card;
+import org.crforge.core.card.CardType;
 import org.crforge.core.component.Combat;
 import org.crforge.core.effect.AppliedEffect;
 import org.crforge.core.engine.GameEngine;
@@ -22,6 +23,8 @@ import org.crforge.data.card.CardRegistry;
 /** Builds observation DTOs from the current game state for RL agents. */
 public class ObservationBuilder {
 
+  public static final int OBSERVATION_SCHEMA_VERSION = 2;
+
   /** Builds a complete observation snapshot from the current engine state. */
   public static ObservationDTO build(GameEngine engine, Player bluePlayer, Player redPlayer) {
     GameState state = engine.getGameState();
@@ -31,6 +34,7 @@ public class ObservationBuilder {
     List<EntityDTO> entities = buildEntityList(state);
 
     return new ObservationDTO(
+        OBSERVATION_SCHEMA_VERSION,
         state.getFrameCount(),
         state.getGameTimeSeconds(),
         engine.isOvertime(),
@@ -80,7 +84,18 @@ public class ObservationBuilder {
   private static HandCardDTO toHandCardDTO(Card card) {
     int cardIndex = CardRegistry.getIndex(card.getId());
     return new HandCardDTO(
-        card.getId(), card.getName(), card.getType().name(), card.getCost(), cardIndex);
+        card.getId(),
+        card.getName(),
+        card.getType().name(),
+        card.getCost(),
+        cardIndex,
+        ObservationIdentity.cardId(card.getId()),
+        allowsEnemyPlacement(card));
+  }
+
+  static boolean allowsEnemyPlacement(Card card) {
+    return (card.getType() == CardType.SPELL && !card.isSpellAsDeploy())
+        || card.isCanDeployOnEnemySide();
   }
 
   private static List<EntityDTO> buildEntityList(GameState state) {
@@ -145,6 +160,7 @@ public class ObservationBuilder {
     return new EntityDTO(
         entity.getId(),
         entity.getName(),
+        ObservationIdentity.entityId(entity.getName()),
         entity.getTeam().name(),
         entity.getEntityType().name(),
         entity.getMovementType().name(),

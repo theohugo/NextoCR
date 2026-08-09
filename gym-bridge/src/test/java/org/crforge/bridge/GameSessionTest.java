@@ -4,11 +4,16 @@ package org.crforge.bridge;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.util.List;
 import org.crforge.bridge.dto.InitConfig;
 import org.crforge.bridge.dto.ObservationDTO;
 import org.crforge.bridge.dto.StepAction;
 import org.crforge.bridge.dto.StepResultDTO;
+import org.crforge.bridge.observation.BinaryObservationEncoder;
+import org.crforge.core.engine.GameOutcome;
 import org.crforge.core.entity.base.Entity;
 import org.crforge.core.entity.structure.Tower;
 import org.crforge.core.player.Team;
@@ -53,6 +58,7 @@ class GameSessionTest {
         .isCloseTo(1.0f, org.assertj.core.data.Offset.offset(0.01f));
     assertThat(result.terminated()).isFalse();
     assertThat(result.truncated()).isFalse();
+    assertThat(result.outcome()).isEqualTo(GameOutcome.ONGOING);
   }
 
   @Test
@@ -187,5 +193,35 @@ class GameSessionTest {
     float expectedRegen = (1.0f / 2.8f) * (1.0f / 20.0f);
     assertThat(afterElixir)
         .isCloseTo(initialBlueElixir + expectedRegen, org.assertj.core.data.Offset.offset(0.01f));
+  }
+
+  @Test
+  void crownTowerKoHasMatchingJsonAndBinaryOutcome() throws Exception {
+    session.init(new InitConfig(TEST_DECK, TEST_DECK, 11, 1));
+    Tower redCrown = session.getEngine().getGameState().getCrownTower(Team.RED);
+    redCrown.getHealth().takeDamage(100_000);
+
+    StepResultDTO result = session.step(null, null);
+    BinaryObservationEncoder encoder = new BinaryObservationEncoder();
+    byte[] encoded =
+        encoder.encodeStepResult(
+            session.getEngine(),
+            session.getBluePlayer(),
+            session.getRedPlayer(),
+            result.reward().blue(),
+            result.reward().red(),
+            result.terminated(),
+            result.truncated(),
+            result.blueActionFailed(),
+            result.redActionFailed());
+
+    assertThat(result.terminated()).isTrue();
+    assertThat(result.outcome()).isEqualTo(GameOutcome.BLUE_WIN);
+    assertThat(new ObjectMapper().writeValueAsString(result)).contains("\"outcome\":\"BLUE_WIN\"");
+    assertThat(
+            ByteBuffer.wrap(encoded)
+                .order(ByteOrder.LITTLE_ENDIAN)
+                .getInt(BinaryObservationEncoder.STEP_OUTCOME_OFFSET))
+        .isEqualTo(result.outcome().binaryCode());
   }
 }

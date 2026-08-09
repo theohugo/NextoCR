@@ -1,5 +1,7 @@
 package org.crforge.bridge.dto;
 
+import org.crforge.core.engine.GameOutcome;
+
 /**
  * Result of a step action, returned to the RL agent.
  *
@@ -12,11 +14,30 @@ public record StepResultDTO(
     RewardDTO reward,
     boolean terminated,
     boolean truncated,
+    GameOutcome outcome,
     boolean blueActionFailed,
     boolean redActionFailed) {
   /** Backwards-compatible constructor without action failure flags. */
   public StepResultDTO(
       ObservationDTO observation, RewardDTO reward, boolean terminated, boolean truncated) {
-    this(observation, reward, terminated, truncated, false, false);
+    this(observation, reward, terminated, truncated, GameOutcome.ONGOING, false, false);
+  }
+
+  /** Backwards-compatible constructor without a canonical outcome. */
+  public StepResultDTO(
+      ObservationDTO observation,
+      RewardDTO reward,
+      boolean terminated,
+      boolean truncated,
+      boolean blueActionFailed,
+      boolean redActionFailed) {
+    this(
+        observation,
+        reward,
+        terminated,
+        truncated,
+        GameOutcome.ONGOING,
+        blueActionFailed,
+        redActionFailed);
   }
 }

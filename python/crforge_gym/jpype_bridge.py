@@ -191,9 +191,9 @@ class InProcessBridge:
         self,
         blue_action: dict | None = None,
         red_action: dict | None = None,
-    ) -> tuple[np.ndarray, float, float, bool, bool, bool, bool]:
+    ) -> tuple[np.ndarray, float, float, bool, bool, bool, bool, str]:
         """Execute one step and return (obs, blue_reward, red_reward,
-        terminated, truncated, blue_action_failed, red_action_failed).
+        terminated, truncated, blue_action_failed, red_action_failed, outcome).
 
         Same return signature as BridgeClient.step() in binary mode.
         """
@@ -219,6 +219,7 @@ class InProcessBridge:
             bool(result.truncated()),
             bool(result.blueActionFailed()),
             bool(result.redActionFailed()),
+            str(result.outcome().name()),
         )
 
     def close(self) -> None:

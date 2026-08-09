@@ -13,6 +13,7 @@ Usage:
 """
 
 import argparse
+import atexit
 import math
 import os
 import sys
@@ -78,12 +79,12 @@ def record_demonstrations(env, num_episodes: int, seed: int) -> tuple[np.ndarray
                     card_type = hand[hand_index].get("type", "TROOP")
 
                 zone = find_nearest_zone(x, y, card_type)
-                action = np.array([1, hand_index, zone])
+                action = env.encode(hand_index, zone)
             else:
-                action = np.array([0, 0, 0])
+                action = 0
 
             all_obs.append(obs.copy())
-            all_actions.append(action.copy())
+            all_actions.append(action)
 
             obs, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
@@ -171,6 +172,7 @@ def main():
                         help="Random seed (default: 42)")
     parser.add_argument("--base-port", type=int, default=9876,
                         help="Port for the Java bridge server (default: 9876)")
+    parser.add_argument("--deck-profile", default="mortar_self_play_v1")
     args = parser.parse_args()
 
     # Check dependencies
@@ -182,30 +184,50 @@ def main():
         sys.exit(1)
 
     from crforge_gym import CRForgeEnv
-    from crforge_gym.wrappers import ActionMaskedWrapper, EpisodeStatsWrapper, FlattenedObsWrapper
+    from crforge_gym.decks import get_deck_profile
+    from crforge_gym.observation_preprocessing import (
+        StaticObservationPreprocessingWrapper,
+        tag_model_preprocessing,
+    )
+    from crforge_gym.training_runtime import DeterministicEpisodeSeedWrapper
+    from crforge_gym.wrappers import (
+        EpisodeStatsWrapper,
+        ExactDiscreteActionWrapper,
+        FlattenedObsWrapper,
+    )
 
     # Import launch_servers from train_ppo (same directory)
     script_dir = os.path.dirname(os.path.abspath(__file__))
     sys.path.insert(0, script_dir)
-    from train_ppo import launch_servers
+    from train_ppo import _terminate_processes, launch_servers
 
     # Launch 1 Java bridge server
     print("Launching Java bridge server...")
-    launch_servers(args.base_port, 1)
+    server_processes = launch_servers(args.base_port, 1)
+
+    def cleanup_servers():
+        _terminate_processes(server_processes)
+
+    atexit.register(cleanup_servers)
 
     endpoint = f"tcp://localhost:{args.base_port}"
 
     # Create wrapped environment
     # BC recording needs JSON mode for expert access to raw observation dicts
+    deck = get_deck_profile(args.deck_profile)
     env = CRForgeEnv(
         endpoint=endpoint,
+        blue_deck=list(deck.simulator_card_ids),
+        red_deck=list(deck.simulator_card_ids),
         ticks_per_step=args.ticks_per_step,
         opponent=args.opponent,
         binary_obs=False,
     )
+    env = DeterministicEpisodeSeedWrapper(env, args.seed)
     env = EpisodeStatsWrapper(env)
     env = FlattenedObsWrapper(env)
-    env = ActionMaskedWrapper(env)
+    env = StaticObservationPreprocessingWrapper(env)
+    env = ExactDiscreteActionWrapper(env)
 
     # -- Phase 1: Record demonstrations --
 
@@ -222,11 +244,19 @@ def main():
         env,
         policy_kwargs={"net_arch": [512, 256]},
         learning_rate=3e-4,
+        n_steps=2048,
+        batch_size=512,
+        n_epochs=10,
+        gamma=0.99,
+        gae_lambda=0.95,
+        clip_range=0.2,
+        ent_coef=0.005,
+        vf_coef=0.5,
+        max_grad_norm=0.5,
         seed=args.seed,
         verbose=1,
     )
-
-    env.close()
+    tag_model_preprocessing(model)
 
     start_time = time.time()
     train_bc(model, observations, actions, args.epochs, args.batch_size, args.lr)
@@ -240,6 +270,9 @@ def main():
     print(f"\nModel saved to {args.save_path}")
     print("Fine-tune with PPO:")
     print(f"  python python/examples/train_ppo.py --resume {args.save_path} --opponent noop --timesteps 2000000")
+    env.close()
+    _terminate_processes(server_processes)
+    atexit.unregister(cleanup_servers)
 
 
 if __name__ == "__main__":

@@ -32,6 +32,9 @@ Thumbs.db
 
 # Logs
 *.log
+logs/
+models/
+runs/
 
 # Python
 __pycache__/

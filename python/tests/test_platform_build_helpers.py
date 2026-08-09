@@ -131,3 +131,23 @@ def test_save_parent_is_created_before_training(tmp_path: Path) -> None:
 
     assert parent == str(save_path.parent)
     assert save_path.parent.is_dir()
+
+
+def test_windows_cleanup_kills_the_complete_launcher_tree() -> None:
+    process = Mock(pid=4321)
+    process.poll.return_value = None
+    process.wait.return_value = 0
+
+    with patch.object(train_ppo, "_is_windows", return_value=True), patch.object(
+        train_ppo.subprocess, "run"
+    ) as run:
+        train_ppo._terminate_processes([process])
+
+    run.assert_called_once_with(
+        ["taskkill", "/PID", "4321", "/T", "/F"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    process.wait.assert_called_once_with(timeout=5)
+    process.terminate.assert_not_called()

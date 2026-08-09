@@ -23,7 +23,7 @@ import org.crforge.data.card.CardRegistry;
  * Encodes observations as a flat float32 array sent as raw bytes. Pre-allocates buffers and writes
  * directly from entity/player/state fields with no DTO allocations.
  *
- * <p>Float layout (1079 values):
+ * <p>Float layout V2 (1153 values). Offsets 0..1078 are the byte-for-byte V1 prefix:
  *
  * <pre>
  * Offset  Count  Field
@@ -42,6 +42,11 @@ import org.crforge.data.card.CardRegistry;
  * 46      1024   entities (64 x 16 features, zero-padded)
  * 1070    1      num_entities
  * 1071    8      lane_summary
+ * 1079    1      observation_schema_version (=2)
+ * 1080    4      hand_card_identity (stable ID / 2^24)
+ * 1084    1      next_card_identity (stable ID / 2^24)
+ * 1085    64     entity_identity (stable archetype ID / 2^24, zero-padded)
+ * 1149    4      hand_allows_enemy_placement (0/1)
  * </pre>
  */
 public class BinaryObservationEncoder {
@@ -54,17 +59,27 @@ public class BinaryObservationEncoder {
   private static final int MAX_ENTITIES = 64;
   private static final int ENTITY_FEATURES = 16;
 
-  // Total floats in the observation
-  public static final int OBS_FLOATS = 1079;
+  // V1 remains a stable prefix. V2 appends versioned identity features.
+  public static final int V1_OBS_FLOATS = 1079;
+  public static final int SCHEMA_VERSION_OFFSET = V1_OBS_FLOATS;
+  public static final int HAND_IDENTITY_OFFSET = SCHEMA_VERSION_OFFSET + 1;
+  public static final int NEXT_CARD_IDENTITY_OFFSET = HAND_IDENTITY_OFFSET + Hand.HAND_SIZE;
+  public static final int ENTITY_IDENTITY_OFFSET = NEXT_CARD_IDENTITY_OFFSET + 1;
+  public static final int HAND_ALLOWS_ENEMY_PLACEMENT_OFFSET =
+      ENTITY_IDENTITY_OFFSET + MAX_ENTITIES;
+  public static final int OBS_FLOATS = HAND_ALLOWS_ENEMY_PLACEMENT_OFFSET + Hand.HAND_SIZE;
   public static final int OBS_BYTES = OBS_FLOATS * 4;
 
   // Lane summary normalization
   private static final float MAX_LANE_HP = 5000f;
   private static final float LANE_SPLIT = 9f;
 
-  // Step result header: 2 floats (rewards) + 4 bytes (flags)
+  // Step result header: 2 floats (rewards) + 4 bytes (flags). The outcome is an append-only
+  // int32 trailer, so the observation remains at byte offset 12.
   public static final int STEP_HEADER_BYTES = 12;
-  public static final int STEP_RESULT_BYTES = STEP_HEADER_BYTES + OBS_BYTES;
+  public static final int STEP_OUTCOME_BYTES = Integer.BYTES;
+  public static final int STEP_OUTCOME_OFFSET = STEP_HEADER_BYTES + OBS_BYTES;
+  public static final int STEP_RESULT_BYTES = STEP_OUTCOME_OFFSET + STEP_OUTCOME_BYTES;
 
   // Type mappings matching Python env.py
   private static final float CARD_TYPE_TROOP = 0f;
@@ -109,7 +124,7 @@ public class BinaryObservationEncoder {
   /**
    * Encodes a full step result: rewards, flags, and observation into a single byte array.
    *
-   * <p>Layout (4328 bytes):
+   * <p>Layout (4628 bytes):
    *
    * <pre>
    * Offset  Type       Field
@@ -119,7 +134,8 @@ public class BinaryObservationEncoder {
    * 9       byte       truncated (0/1)
    * 10      byte       blueActionFailed (0/1)
    * 11      byte       redActionFailed (0/1)
-   * 12      float32[]  observation (1079 floats)
+   * 12      float32[]  observation (1153 floats)
+   * 4624    int32      outcome (0=ONGOING, 1=BLUE_WIN, 2=RED_WIN, 3=DRAW)
    * </pre>
    */
   public byte[] encodeStepResult(
@@ -145,6 +161,7 @@ public class BinaryObservationEncoder {
     for (int i = 0; i < OBS_FLOATS; i++) {
       stepBuf.putFloat(obs[i]);
     }
+    stepBuf.putInt(engine.getGameState().getOutcome().binaryCode());
     return stepBuf.array().clone();
   }
 
@@ -162,6 +179,7 @@ public class BinaryObservationEncoder {
   private void fillObsBuffer(GameEngine engine, Player bluePlayer, Player redPlayer) {
     // Zero out previous values
     java.util.Arrays.fill(obs, 0f);
+    obs[SCHEMA_VERSION_OFFSET] = ObservationBuilder.OBSERVATION_SCHEMA_VERSION;
 
     GameState state = engine.getGameState();
     int idx = 0;
@@ -205,6 +223,10 @@ public class BinaryObservationEncoder {
       Card card = hand.getCard(i);
       if (card != null) {
         obs[idx++] = CardRegistry.getIndex(card.getId()); // 15-18: hand card IDs
+        obs[HAND_IDENTITY_OFFSET + i] =
+            ObservationIdentity.normalize(ObservationIdentity.cardId(card.getId()));
+        obs[HAND_ALLOWS_ENEMY_PLACEMENT_OFFSET + i] =
+            ObservationBuilder.allowsEnemyPlacement(card) ? 1f : 0f;
       } else {
         obs[idx++] = -1f;
       }
@@ -216,6 +238,8 @@ public class BinaryObservationEncoder {
       obs[idx++] = nextCard.getCost() / 10f; // 19: next card cost
       obs[idx++] = cardTypeToFloat(nextCard.getType()); // 20: next card type
       obs[idx++] = CardRegistry.getIndex(nextCard.getId()); // 21: next card id
+      obs[NEXT_CARD_IDENTITY_OFFSET] =
+          ObservationIdentity.normalize(ObservationIdentity.cardId(nextCard.getId()));
     } else {
       obs[idx++] = 0f;
       obs[idx++] = 0f;
@@ -246,6 +270,8 @@ public class BinaryObservationEncoder {
     for (int i = 0; i < numEntities; i++) {
       Entity e = alive.get(i);
       int base = entitiesOffset + i * ENTITY_FEATURES;
+      obs[ENTITY_IDENTITY_OFFSET + i] =
+          ObservationIdentity.normalize(ObservationIdentity.entityId(e.getName()));
 
       // Team
       obs[base] = e.getTeam() == Team.BLUE ? TEAM_BLUE : TEAM_RED;

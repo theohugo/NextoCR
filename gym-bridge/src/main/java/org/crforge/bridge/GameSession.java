@@ -13,6 +13,7 @@ import org.crforge.bridge.observation.RewardCalculator;
 import org.crforge.core.card.Card;
 import org.crforge.core.engine.ActionReceipt;
 import org.crforge.core.engine.GameEngine;
+import org.crforge.core.engine.GameOutcome;
 import org.crforge.core.match.Standard1v1Match;
 import org.crforge.core.player.Deck;
 import org.crforge.core.player.LevelConfig;
@@ -168,13 +169,15 @@ public class GameSession {
     ObservationDTO observation =
         includeObservation ? ObservationBuilder.build(engine, bluePlayer, redPlayer) : null;
     RewardDTO reward = rewardCalculator.computeReward(engine.getGameState());
-    boolean terminated = engine.getGameState().isGameOver() || !engine.isRunning();
+    GameOutcome outcome = engine.getGameState().getOutcome();
+    boolean terminated = outcome.isTerminal() || !engine.isRunning();
 
     return new StepResultDTO(
         observation,
         reward,
         terminated,
         false,
+        outcome,
         actionFailed(blueReceipt),
         actionFailed(redReceipt));
   }
