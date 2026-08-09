@@ -17,12 +17,15 @@ from dataclasses import dataclass, field
 import random
 from typing import Any, Iterable, Sequence
 
+import gymnasium as gym
+
 from crforge_gym.card_properties import CardFeatureTable, default_table
 
 __all__ = [
     "DECK_SIZE",
     "DeckConstraints",
     "DeckSampler",
+    "RandomDeckWrapper",
     "SampledDeck",
     "card_roles",
 ]
@@ -255,3 +258,51 @@ class DeckSampler:
             average_elixir=self.average_elixir(card_ids),
             roles={role: tuple(cards) for role, cards in roles.items()},
         )
+
+
+class RandomDeckWrapper(gym.Wrapper):
+    """Draw a fresh coherent deck for both players at every episode.
+
+    Facing one deck for millions of steps produces a specialist: the mortar
+    mirror run reached 64% against its own league while still losing to a
+    scripted bot. Resampling per episode is what forces a policy to read the
+    board instead of replaying a memorised script.
+
+    Must wrap :class:`~crforge_gym.env.CRForgeEnv` closely enough that
+    ``set_decks`` is reachable, and sits below any observation wrapper.
+    """
+
+    def __init__(
+        self,
+        env: gym.Env,
+        sampler: DeckSampler | None = None,
+        *,
+        seed: int = 0,
+        mirror: bool = False,
+    ) -> None:
+        super().__init__(env)
+        self.sampler = sampler or DeckSampler()
+        self.mirror = mirror
+        self._rng = random.Random(seed)
+        self._episode = 0
+        self.current_blue: SampledDeck | None = None
+        self.current_red: SampledDeck | None = None
+
+    def reset(self, **kwargs: Any):
+        # Derive per-episode streams from the run seed so a resumed run replays
+        # the same deck sequence instead of restarting the draw.
+        episode_rng = random.Random(self._rng.randrange(1 << 62))
+        blue = self.sampler.sample(episode_rng)
+        red = blue if self.mirror else self.sampler.sample(episode_rng)
+        target = self.env.unwrapped
+        target.set_decks(list(blue.card_ids), list(red.card_ids))
+        self.current_blue = blue
+        self.current_red = red
+        self._episode += 1
+
+        observation, info = self.env.reset(**kwargs)
+        info = dict(info)
+        info["blue_deck"] = list(blue.card_ids)
+        info["red_deck"] = list(red.card_ids)
+        info["blue_average_elixir"] = blue.average_elixir
+        return observation, info

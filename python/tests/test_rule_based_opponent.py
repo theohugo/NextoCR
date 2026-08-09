@@ -84,6 +84,9 @@ def test_rule_based_opponent_replays_choices_after_same_seed_reset():
     env = CRForgeEnv(opponent="rule_based", binary_obs=True)
     env._client = _FakeBinaryClient()
     env._connected = True
+    # The fake client has no init(); mark the session already initialised so
+    # reset() does not try to send decks to it.
+    env._needs_init = False
     try:
         first_actions = _actions_after_reset(env, seed=17)
         second_actions = _actions_after_reset(env, seed=17)

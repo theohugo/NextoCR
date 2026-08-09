@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import random
 
+import gymnasium as gym
 import pytest
 
 from crforge_gym.card_properties import default_table
@@ -106,3 +107,60 @@ def test_manifest_round_trip(sampler: DeckSampler) -> None:
     assert len(manifest["card_ids"]) == DECK_SIZE
     assert isinstance(manifest["average_elixir"], float)
     assert "win_condition" in manifest["roles"]
+
+
+class _StubEnv(gym.Env):
+    """Minimal stand-in for CRForgeEnv: records the decks it was given."""
+
+    def __init__(self) -> None:
+        self.decks: list[tuple[list[str], list[str]]] = []
+        self.observation_space = gym.spaces.Discrete(1)
+        self.action_space = gym.spaces.Discrete(1)
+
+    def set_decks(self, blue, red):
+        assert len(blue) == DECK_SIZE and len(red) == DECK_SIZE
+        self.decks.append((list(blue), list(red)))
+
+    def reset(self, **kwargs):
+        return {}, {}
+
+    def close(self):
+        pass
+
+
+def test_random_deck_wrapper_redraws_every_episode() -> None:
+    from crforge_gym.deck_sampler import RandomDeckWrapper
+
+    env = _StubEnv()
+    wrapper = RandomDeckWrapper(env, seed=1)
+
+    seen = set()
+    for _ in range(15):
+        _, info = wrapper.reset()
+        seen.add(tuple(info["blue_deck"]))
+        assert len(info["blue_deck"]) == DECK_SIZE
+        assert info["blue_deck"] != info["red_deck"]
+
+    assert len(env.decks) == 15
+    # A specialist is exactly what redrawing is meant to prevent.
+    assert len(seen) >= 12
+
+
+def test_random_deck_wrapper_is_reproducible_from_its_seed() -> None:
+    from crforge_gym.deck_sampler import RandomDeckWrapper
+
+    first = RandomDeckWrapper(_StubEnv(), seed=99)
+    second = RandomDeckWrapper(_StubEnv(), seed=99)
+
+    for _ in range(5):
+        assert first.reset()[1]["blue_deck"] == second.reset()[1]["blue_deck"]
+
+
+def test_mirror_mode_gives_both_players_the_same_deck() -> None:
+    from crforge_gym.deck_sampler import RandomDeckWrapper
+
+    wrapper = RandomDeckWrapper(_StubEnv(), seed=4, mirror=True)
+
+    _, info = wrapper.reset()
+
+    assert info["blue_deck"] == info["red_deck"]
