@@ -1,4 +1,7 @@
-# Contributing to crforge
+# Contributing to NextoCR
+
+> **Modified-file notice:** this guide derives from the Apache-2.0 crforge contribution guide and
+> was updated by NextoCR.
 
 Thanks for your interest in contributing! This guide covers the basics.
 
@@ -27,10 +30,15 @@ CI will reject PRs that don't pass `spotlessCheck`.
 - Run: `./gradlew :core:test :data:test`
 - For bug fixes, follow TDD: write a failing test first, then fix the bug and confirm the test passes.
 - Tests should exercise the real code path, not just call the fix function in isolation.
+- Determinism fixes should include at least two independent sessions and reset/replay coverage.
+- Card-data changes must identify source, patch/season, level, confidence, and validation method.
+- Do not add official art/audio, client binaries, credentials, private-server code, or live-client
+  automation.
 
 ## Python Bridge
 
-The `gym-bridge` module exposes a Gymnasium-compatible environment for RL training.
+The `gym-bridge` module exposes a Gymnasium-compatible environment for RL training. New consumers
+should import `NextoCREnv` from `nextocr_gym`; `crforge_gym` remains available for compatibility.
 
 To set up:
 
@@ -58,4 +66,4 @@ See the [architecture docs](docs/) for module layout and design decisions.
 
 ## Questions?
 
-Open a [discussion](../../discussions) or file an issue. We're happy to help.
+Open an [issue](https://github.com/theohugo/NextoCR/issues) with your question or proposal.

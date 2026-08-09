@@ -1,3 +1,4 @@
+// Modified by NextoCR contributors; see NOTICE for attribution.
 package org.crforge.bridge.observation;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -12,7 +13,12 @@ import org.crforge.bridge.dto.ObservationDTO;
 import org.crforge.bridge.dto.PlayerObsDTO;
 import org.crforge.bridge.dto.TowerDTO;
 import org.crforge.core.card.Card;
+import org.crforge.core.component.Health;
+import org.crforge.core.component.Movement;
+import org.crforge.core.component.Position;
 import org.crforge.core.engine.GameEngine;
+import org.crforge.core.entity.base.MovementType;
+import org.crforge.core.entity.unit.Troop;
 import org.crforge.core.match.Standard1v1Match;
 import org.crforge.core.player.Deck;
 import org.crforge.core.player.LevelConfig;
@@ -199,6 +205,27 @@ class BinaryObservationEncoderTest {
       int maxHp = Math.max(e.maxHp(), 1);
       assertThat(obs[base + 5]).isCloseTo((float) e.hp() / maxHp, offset(0.01f));
     }
+  }
+
+  @Test
+  void laneCountAdvantageStaysWithinDeclaredBoundsForLargeSwarms() {
+    for (int i = 0; i < 70; i++) {
+      engine.spawn(
+          Troop.builder()
+              .name("Swarm " + i)
+              .team(Team.BLUE)
+              .position(new Position(5f, 10f))
+              .health(new Health(1))
+              .movement(new Movement(0f, 0f, 0.1f, 0.1f, MovementType.GROUND))
+              .deployTime(0f)
+              .build());
+    }
+    engine.getGameState().processPending();
+
+    float[] obs = decodeObs(encoder.encodeObservation(engine, bluePlayer, redPlayer));
+
+    assertThat(obs[1070]).isEqualTo(64f);
+    assertThat(obs[1078]).isEqualTo(1f);
   }
 
   @Test

@@ -1,5 +1,7 @@
+// Modified by NextoCR contributors; see NOTICE for attribution.
 package org.crforge.core.engine;
 
+import java.util.Random;
 import lombok.Getter;
 import org.crforge.core.ability.AbilitySystem;
 import org.crforge.core.ability.DefaultCombatAbilityBridge;
@@ -29,6 +31,7 @@ public class GameEngine {
 
   public static final int TICKS_PER_SECOND = 20;
   public static final float DELTA_TIME = 1.0f / TICKS_PER_SECOND;
+  public static final long DEFAULT_RANDOM_SEED = 42L;
 
   private final GameState gameState;
   private final TargetingSystem targetingSystem;
@@ -51,8 +54,18 @@ public class GameEngine {
   private boolean running;
 
   public GameEngine() {
+    this(DEFAULT_RANDOM_SEED);
+  }
+
+  /** Creates an engine whose stochastic systems start from {@code seed}. */
+  public GameEngine(long seed) {
+    this(new Random(seed));
+  }
+
+  /** Creates an engine using an injected random stream for target selection. */
+  public GameEngine(Random targetingRandom) {
     this.gameState = new GameState();
-    this.targetingSystem = new TargetingSystem();
+    this.targetingSystem = new TargetingSystem(targetingRandom);
 
     DefaultCombatAbilityBridge abilityBridge = new DefaultCombatAbilityBridge();
     AoeDamageService aoeDamageService = new AoeDamageService(gameState, abilityBridge);
@@ -93,14 +106,19 @@ public class GameEngine {
     gameState.setArena(match.getArena());
   }
 
-  /** Queue a player action for processing on next tick. */
-  public void queueAction(Player player, PlayerActionDTO action) {
+  /**
+   * Queues a player action for processing on the next tick and returns its acceptance receipt.
+   * Invalid placements are rejected immediately; resource checks resolve when the deployment system
+   * processes the action.
+   */
+  public ActionReceipt queueAction(Player player, PlayerActionDTO action) {
     if (match == null) {
       throw new IllegalStateException("Match not set");
     }
-    if (match.validateAction(player, action)) {
-      deploymentSystem.queueAction(player, action);
+    if (!isRunning() || !match.validateAction(player, action)) {
+      return ActionReceipt.rejected(player, action);
     }
+    return deploymentSystem.queueAction(player, action);
   }
 
   /**
@@ -118,6 +136,18 @@ public class GameEngine {
 
     // Reset GameState and create towers
     initMatch();
+  }
+
+  /**
+   * Resets the engine for a new seeded episode.
+   *
+   * <p>The targeting stream is rewound before any entities are created, so replaying the same
+   * actions with the same seed consumes the same random choices even when the engine instance is
+   * reused.
+   */
+  public void resetForNewMatch(Match match, long seed) {
+    targetingSystem.reset(seed);
+    resetForNewMatch(match);
   }
 
   /** Initialize a new match. Requires setMatch() to be called first. */

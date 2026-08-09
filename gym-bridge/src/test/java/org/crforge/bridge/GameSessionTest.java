@@ -1,3 +1,4 @@
+// Modified by NextoCR contributors; see NOTICE for attribution.
 package org.crforge.bridge;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -8,6 +9,9 @@ import org.crforge.bridge.dto.InitConfig;
 import org.crforge.bridge.dto.ObservationDTO;
 import org.crforge.bridge.dto.StepAction;
 import org.crforge.bridge.dto.StepResultDTO;
+import org.crforge.core.entity.base.Entity;
+import org.crforge.core.entity.structure.Tower;
+import org.crforge.core.player.Team;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -110,6 +114,39 @@ class GameSessionTest {
     obs = session.observe();
     assertThat(obs.frame()).isZero();
     assertThat(obs.entities()).hasSize(6);
+  }
+
+  @Test
+  void resettingOneSessionDoesNotRewindAnotherSessionsIdSequence() {
+    InitConfig config = new InitConfig(TEST_DECK, TEST_DECK, 11, 1, 42L);
+    GameSession firstSession = new GameSession();
+    GameSession secondSession = new GameSession();
+    firstSession.init(config);
+    secondSession.init(config);
+
+    assertThat(firstSession.getEngine().getGameState().getEntities())
+        .extracting(Entity::getId)
+        .containsExactlyInAnyOrder(1L, 2L, 3L, 4L, 5L, 6L);
+    assertThat(secondSession.getEngine().getGameState().getEntities())
+        .extracting(Entity::getId)
+        .containsExactlyInAnyOrder(1L, 2L, 3L, 4L, 5L, 6L);
+
+    Tower seventhInSecond = Tower.createPrincessTower(Team.BLUE, 1, 1, 11);
+    secondSession.getEngine().spawn(seventhInSecond);
+    assertThat(seventhInSecond.getId()).isEqualTo(7);
+
+    // This used to reset the process-wide static counter and make the next object in the second
+    // session collide with seventhInSecond.
+    firstSession.reset(42L);
+
+    Tower eighthInSecond = Tower.createPrincessTower(Team.RED, 17, 31, 11);
+    secondSession.getEngine().spawn(eighthInSecond);
+    secondSession.getEngine().getGameState().processPending();
+
+    assertThat(eighthInSecond.getId()).isEqualTo(8);
+    assertThat(secondSession.getEngine().getGameState().getEntities())
+        .extracting(Entity::getId)
+        .doesNotHaveDuplicates();
   }
 
   @Test

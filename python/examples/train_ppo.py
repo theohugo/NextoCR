@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
+# Modified by NextoCR contributors; see NOTICE for attribution.
 """
 Train a PPO agent on CRForge using Stable Baselines 3.
 
 Prerequisites:
   1. Start the Java bridge server: ./gradlew :gym-bridge:run
      (or use --num-envs N to auto-launch N servers)
-  2. Install dependencies: pip install -e "python/[train]"
+  2. Install dependencies: pip install -e "python[train]"
 
 Usage:
   python python/examples/train_ppo.py
@@ -27,11 +28,39 @@ import time
 # Server management (auto-launch for multi-env)
 # ---------------------------------------------------------------------------
 
-def _find_project_root() -> str | None:
-    """Walk up from this script to find the directory containing gradlew."""
-    path = os.path.dirname(os.path.abspath(__file__))
+def _is_windows(os_name: str | None = None) -> bool:
+    """Return whether *os_name* (or the current platform) is Windows."""
+    return (os_name or os.name) == "nt"
+
+
+def _gradle_wrapper_path(project_root: str, os_name: str | None = None) -> str:
+    """Return the native Gradle wrapper path for the requested platform."""
+    wrapper = "gradlew.bat" if _is_windows(os_name) else "gradlew"
+    return os.path.join(project_root, wrapper)
+
+
+def _bridge_launcher_path(project_root: str, os_name: str | None = None) -> str:
+    """Return the native installDist launcher path for the requested platform."""
+    launcher = "gym-bridge.bat" if _is_windows(os_name) else "gym-bridge"
+    return os.path.join(
+        project_root,
+        "gym-bridge",
+        "build",
+        "install",
+        "gym-bridge",
+        "bin",
+        launcher,
+    )
+
+
+def _find_project_root(
+    start_path: str | None = None, os_name: str | None = None
+) -> str | None:
+    """Walk upwards until the native Gradle wrapper is found."""
+    path = start_path or os.path.dirname(os.path.abspath(__file__))
+    path = os.path.abspath(path)
     for _ in range(10):
-        if os.path.isfile(os.path.join(path, "gradlew")):
+        if os.path.isfile(_gradle_wrapper_path(path, os_name)):
             return path
         path = os.path.dirname(path)
     return None
@@ -47,18 +76,21 @@ def _get_java_home() -> str:
         return os.environ.get("JAVA_HOME", "")
 
 
-def _build_bridge_dist(project_root: str) -> str:
-    """Build gym-bridge distribution, return path to the launch script."""
-    script = os.path.join(
-        project_root, "gym-bridge", "build", "install", "gym-bridge", "bin", "gym-bridge"
-    )
-    if os.path.isfile(script):
-        return script
+def _build_bridge_dist(project_root: str, os_name: str | None = None) -> str:
+    """Incrementally refresh installDist and return its native launcher."""
+    script = _bridge_launcher_path(project_root, os_name)
 
-    print("Building gym-bridge distribution...")
-    env = {**os.environ, "JAVA_HOME": _get_java_home()}
+    print("Refreshing gym-bridge distribution...")
+    env = {**os.environ}
+    java_home = _get_java_home()
+    if java_home:
+        env["JAVA_HOME"] = java_home
     result = subprocess.run(
-        [os.path.join(project_root, "gradlew"), ":gym-bridge:installDist", "-q"],
+        [
+            _gradle_wrapper_path(project_root, os_name),
+            ":gym-bridge:installDist",
+            "-q",
+        ],
         cwd=project_root,
         capture_output=True,
         text=True,
@@ -67,8 +99,18 @@ def _build_bridge_dist(project_root: str) -> str:
     if result.returncode != 0:
         print(f"Build failed:\n{result.stderr}")
         sys.exit(1)
-    print("Build complete.")
+    if not os.path.isfile(script):
+        print(f"Build failed: native bridge launcher was not created at {script}")
+        sys.exit(1)
+    print("Distribution is up to date.")
     return script
+
+
+def _ensure_save_parent(save_path: str) -> str:
+    """Create and return the parent directory used by model.save()."""
+    parent = os.path.dirname(os.path.abspath(os.path.expanduser(save_path)))
+    os.makedirs(parent, exist_ok=True)
+    return parent
 
 
 def _wait_for_server(endpoint: str, timeout: int = 30) -> bool:
@@ -211,7 +253,8 @@ def main():
     parser.add_argument("--endpoint", default="tcp://localhost:9876",
                         help="Bridge server endpoint (single-env mode)")
     parser.add_argument("--ticks-per-step", type=int, default=15,
-                        help="Simulation ticks per step (default: 15, ~360 steps/game)")
+                        help="Simulation ticks per step (default: 15, ~240 regulation steps, "
+                             "~400 with overtime)")
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed")
     parser.add_argument("--resume", type=str, default=None,
@@ -242,7 +285,7 @@ def main():
         from stable_baselines3.common.vec_env import SubprocVecEnv
     except ImportError:
         print("Error: sb3-contrib or stable-baselines3 not installed.")
-        print("Install with: pip install -e \"python/[train]\"")
+        print("Install with: pip install -e \"python[train]\"")
         sys.exit(1)
 
     from collections import deque
@@ -252,11 +295,18 @@ def main():
     from crforge_gym.wrappers import ActionMaskedWrapper, EpisodeStatsWrapper, FlattenedObsWrapper
 
     # Validate flags
-    if args.opponent == "self_play" and args.num_envs > 1 and not args.jpype:
-        print("Error: self-play is not supported with --num-envs > 1 (subprocess mode).")
-        print("Self-play requires shared opponent state across envs.")
-        print("Use --jpype --num-envs N (threaded, single process) or --num-envs 1.")
+    if args.opponent == "self_play" and args.jpype:
+        print("Error: self-play requires JSON observations with the red player's hand.")
+        print("The JPype backend currently exposes only the binary blue-hand schema.")
+        print("Use the ZMQ backend with --num-envs 1.")
         sys.exit(1)
+    if args.opponent == "self_play" and args.num_envs > 1:
+        print("Error: self-play is not supported with --num-envs > 1 (subprocess mode).")
+        print("The prototype requires shared opponent state and JSON observations.")
+        print("Use the ZMQ backend with --num-envs 1.")
+        sys.exit(1)
+
+    binary_observations = args.opponent != "self_play"
 
     # -- Server setup --
 
@@ -410,11 +460,13 @@ def main():
                 endpoint=endpoint or "tcp://localhost:9876",
                 ticks_per_step=args.ticks_per_step,
                 opponent=env_opponent,
-                binary_obs=True,
+                binary_obs=binary_observations,
                 backend=backend,
             )
             env = EpisodeStatsWrapper(env)
-            # binary_obs=True already produces flat observations; skip FlattenedObsWrapper
+            if not binary_observations:
+                env = FlattenedObsWrapper(env)
+            # Binary observations are already flat; JSON self-play is flattened above.
             env = ActionMaskedWrapper(env)
             return env
         return _init
@@ -479,6 +531,8 @@ def main():
         ))
 
     # -- Training --
+
+    _ensure_save_parent(args.save_path)
 
     print(f"\nStarting training for {args.timesteps} timesteps...")
     print(f"Backend: {'jpype (in-process JVM)' if args.jpype else 'zmq'}")

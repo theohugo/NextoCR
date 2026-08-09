@@ -1,12 +1,16 @@
+# Modified by the NextoCR project from the Apache-2.0 crforge distribution metadata.
 [build-system]
-requires = ["setuptools>=68.0", "wheel"]
+requires = ["setuptools>=77.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "crforge-gym"
+name = "nextocr-gym"
 version = "0.1.0"
-description = "Gymnasium environment for CRForge Clash Royale simulator"
+description = "Gymnasium environment for the offline NextoCR self-play research simulator"
+readme = "README.md"
 requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 dependencies = [
     "gymnasium>=0.29.0",
     "numpy>=1.24.0",
@@ -31,4 +35,9 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["crforge_gym*"]
+include = ["crforge_gym*", "nextocr_gym*"]
+
+[project.urls]
+Homepage = "https://github.com/theohugo/NextoCR"
+Repository = "https://github.com/theohugo/NextoCR"
+Issues = "https://github.com/theohugo/NextoCR/issues"

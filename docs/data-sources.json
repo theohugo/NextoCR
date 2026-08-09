@@ -1,0 +1,125 @@
+{
+  "schemaVersion": 1,
+  "auditedAt": "2026-08-09",
+  "simulatorBaseline": {
+    "source": "voonhous/crforge",
+    "commit": "c41c16a85e6474e8a59b088ace8358a76b9a9d1a",
+    "claimedGameSeason": 80,
+    "claimedGameDataVersion": "202602",
+    "status": "inherited-unverified"
+  },
+  "sources": [
+    {
+      "id": "supercell-cards-api",
+      "url": "https://developer.clashroyale.com/#/documentation",
+      "role": "authoritative-catalog",
+      "format": "authenticated-json",
+      "automatedAccess": "allowed-with-token-and-ip-allow-list",
+      "license": "no-open-data-license-identified",
+      "redistribution": "do-not-publish-raw-response-or-assets-without-review",
+      "combatStats": false,
+      "status": "use"
+    },
+    {
+      "id": "supercell-release-notes",
+      "url": "https://supercell.com/en/games/clashroyale/blog/release-notes/",
+      "role": "authoritative-change-events",
+      "format": "html",
+      "automatedAccess": "manual-or-conservative-fetch-subject-to-site-terms",
+      "license": "all-rights-reserved",
+      "redistribution": "encode-small-factual-deltas-and-cite-url;no-media-or-prose-copy",
+      "combatStats": "deltas-only",
+      "status": "use"
+    },
+    {
+      "id": "fandom-clash-royale-wiki",
+      "url": "https://clashroyale.fandom.com/api.php",
+      "role": "licensed-detailed-stat-seed",
+      "format": "mediawiki-api-wikitext",
+      "automatedAccess": "api-only-with-caching-and-provider-rules",
+      "license": "CC-BY-SA-3.0-text-unless-otherwise-noted",
+      "redistribution": "share-alike-with-article-revision-attribution;exclude-media",
+      "combatStats": true,
+      "status": "use-with-validation"
+    },
+    {
+      "id": "liquipedia-clash-royale",
+      "url": "https://liquipedia.net/api-terms-of-use",
+      "role": "licensed-cross-validation",
+      "format": "mediawiki-api-wikitext",
+      "automatedAccess": "api-only;respect-user-agent-cache-and-rate-limits",
+      "license": "CC-BY-SA-3.0-text-and-code;media-varies",
+      "redistribution": "share-alike-with-page-revision-attribution;exclude-unlicensed-media",
+      "combatStats": true,
+      "status": "use-with-validation"
+    },
+    {
+      "id": "voonhous-crforge",
+      "url": "https://github.com/voonhous/crforge",
+      "role": "engine-foundation-and-inherited-data",
+      "format": "java-and-json",
+      "automatedAccess": "git",
+      "license": "Apache-2.0-code;underlying-community-decoded-data-rights-unresolved",
+      "redistribution": "retain-license-and-notice;re-source-data-fields-before-certification",
+      "combatStats": true,
+      "status": "use-code;quarantine-data-provenance"
+    },
+    {
+      "id": "royaleapi-cr-api-data",
+      "url": "https://github.com/RoyaleAPI/cr-api-data",
+      "role": "historical-reference-only",
+      "format": "json",
+      "automatedAccess": "git",
+      "license": "no-explicit-license-at-audited-commit",
+      "redistribution": "do-not-copy-or-relicense",
+      "combatStats": true,
+      "lastAuditedCommit": "d5461b0a59bff33c4da2fc845b07275b66b2d6ff",
+      "lastAuditedCommitDate": "2023-10-18",
+      "status": "reject-for-ingestion"
+    },
+    {
+      "id": "royaleapi-website",
+      "url": "https://royaleapi.com/tos",
+      "role": "manual-discrepancy-signal",
+      "format": "website",
+      "automatedAccess": "no-ingestion-without-written-permission",
+      "license": "proprietary",
+      "redistribution": "do-not-copy-or-republish",
+      "combatStats": "page-dependent",
+      "status": "manual-reference-only"
+    },
+    {
+      "id": "kaggle-emirdm-cards-2025",
+      "url": "https://www.kaggle.com/datasets/emirdm/clash-royale-cards-dataset",
+      "role": "low-confidence-seed-or-fixture",
+      "format": "csv",
+      "automatedAccess": "download-exact-version-under-kaggle-terms",
+      "license": "CC0-as-declared-by-dataset-page",
+      "redistribution": "allowed-by-declared-license-with-version-metadata",
+      "combatStats": "limited",
+      "status": "optional-incomplete"
+    },
+    {
+      "id": "noff-card-directory",
+      "url": "https://www.noff.gg/clash-royale/cards",
+      "role": "manual-discrepancy-signal",
+      "format": "website",
+      "automatedAccess": "no-ingestion-without-written-permission",
+      "license": "no-open-data-license-identified",
+      "redistribution": "do-not-scrape-or-republish",
+      "combatStats": true,
+      "status": "manual-reference-only"
+    },
+    {
+      "id": "extracted-game-files",
+      "url": "https://supercell.com/en/terms-of-service/",
+      "role": "prohibited-source-class",
+      "format": "apk-ipa-csv-binary-asset-or-protocol-dump",
+      "automatedAccess": "prohibited",
+      "license": "not-reusable",
+      "redistribution": "prohibited",
+      "combatStats": true,
+      "status": "reject"
+    }
+  ]
+}

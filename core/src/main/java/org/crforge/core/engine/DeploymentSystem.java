@@ -1,3 +1,4 @@
+// Modified by NextoCR contributors; see NOTICE for attribution.
 package org.crforge.core.engine;
 
 import java.util.ArrayList;
@@ -31,7 +32,7 @@ public class DeploymentSystem {
   private final EntityFactory entityFactory;
 
   // Internal queue to hold requests associated with the player who made them
-  private final Queue<DeploymentRequest> requestQueue = new ConcurrentLinkedQueue<>();
+  private final Queue<ActionReceipt> requestQueue = new ConcurrentLinkedQueue<>();
 
   // Deployments waiting for the sync delay to expire before spawning
   @Getter private final List<PendingDeployment> pendingDeployments = new ArrayList<>();
@@ -40,13 +41,18 @@ public class DeploymentSystem {
     this.entityFactory = new EntityFactory(state, aoeDamageService);
   }
 
-  public void queueAction(Player player, PlayerActionDTO action) {
-    requestQueue.offer(new DeploymentRequest(player, action));
+  public ActionReceipt queueAction(Player player, PlayerActionDTO action) {
+    ActionReceipt receipt = new ActionReceipt(player, action);
+    requestQueue.offer(receipt);
+    return receipt;
   }
 
   /** Clears all queued actions and pending deployments. Called on match reset. */
   public void reset() {
-    requestQueue.clear();
+    ActionReceipt receipt;
+    while ((receipt = requestQueue.poll()) != null) {
+      receipt.reject();
+    }
     pendingDeployments.clear();
   }
 
@@ -58,9 +64,9 @@ public class DeploymentSystem {
    */
   public void update(float deltaTime) {
     // 1. Drain request queue -> create PendingDeployments
-    while (!requestQueue.isEmpty()) {
-      DeploymentRequest request = requestQueue.poll();
-      processRequest(request);
+    ActionReceipt receipt;
+    while ((receipt = requestQueue.poll()) != null) {
+      processRequest(receipt);
     }
 
     // 2. Tick pending deployment timers with two-phase spawning
@@ -161,9 +167,9 @@ public class DeploymentSystem {
     }
   }
 
-  private void processRequest(DeploymentRequest request) {
-    Player player = request.player;
-    PlayerActionDTO action = request.action;
+  private void processRequest(ActionReceipt receipt) {
+    Player player = receipt.player();
+    PlayerActionDTO action = receipt.action();
 
     // Capture pre-spend elixir for variant resolution (e.g. MergeMaiden form selection)
     int preSpendElixir = player.getElixir().getFloor();
@@ -171,38 +177,39 @@ public class DeploymentSystem {
     // 1. Validate Resources & Cycle Card (elixir spent immediately)
     Card card = player.tryPlayCard(action);
 
-    if (card != null) {
-      // Resolve variant based on pre-spend elixir
-      Card resolvedCard = card.resolveVariant(preSpendElixir);
-
-      // For mirrorCopiesVariant cards, store the resolved variant as lastPlayedCard
-      // so Mirror replays the specific variant without re-evaluating triggers
-      if (card.isMirrorCopiesVariant() && resolvedCard != card) {
-        player.setLastPlayedCard(resolvedCard);
-      }
-
-      // Mirror sets pendingMirrorLevel to override the card's normal level
-      int cardLevel;
-      if (player.getPendingMirrorLevel() > 0) {
-        cardLevel = player.getPendingMirrorLevel();
-        player.clearPendingMirrorLevel();
-      } else {
-        cardLevel = player.getLevelConfig().getLevelFor(resolvedCard);
-      }
-      // 2. Queue for spawn after sync delay
-      pendingDeployments.add(
-          new PendingDeployment(
-              player.getTeam(),
-              resolvedCard,
-              action.getX(),
-              action.getY(),
-              cardLevel,
-              PLACEMENT_SYNC_DELAY));
+    if (card == null) {
+      receipt.reject();
+      return;
     }
-  }
 
-  // Simple container for the queue
-  private record DeploymentRequest(Player player, PlayerActionDTO action) {}
+    // Resolve variant based on pre-spend elixir
+    Card resolvedCard = card.resolveVariant(preSpendElixir);
+
+    // For mirrorCopiesVariant cards, store the resolved variant as lastPlayedCard
+    // so Mirror replays the specific variant without re-evaluating triggers
+    if (card.isMirrorCopiesVariant() && resolvedCard != card) {
+      player.setLastPlayedCard(resolvedCard);
+    }
+
+    // Mirror sets pendingMirrorLevel to override the card's normal level
+    int cardLevel;
+    if (player.getPendingMirrorLevel() > 0) {
+      cardLevel = player.getPendingMirrorLevel();
+      player.clearPendingMirrorLevel();
+    } else {
+      cardLevel = player.getLevelConfig().getLevelFor(resolvedCard);
+    }
+    // 2. Queue for spawn after sync delay
+    pendingDeployments.add(
+        new PendingDeployment(
+            player.getTeam(),
+            resolvedCard,
+            action.getX(),
+            action.getY(),
+            cardLevel,
+            PLACEMENT_SYNC_DELAY));
+    receipt.accept();
+  }
 
   /**
    * Holds a resolved deployment during the server sync delay and staggered unit spawning. Elixir

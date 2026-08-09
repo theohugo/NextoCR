@@ -1,4 +1,5 @@
 #!/bin/bash
+# Modified by NextoCR contributors; see NOTICE for attribution.
 # Start the Java bridge server, run PPO training, and clean up on exit.
 #
 # Usage:
@@ -12,14 +13,45 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 cd "$PROJECT_DIR"
 
+# Multi-process ZMQ training launches its own servers, while JPype needs none.
+NEEDS_SINGLE_SERVER=1
+EXPECT_NUM_ENVS=0
+for ARG in "$@"; do
+    if [ "$EXPECT_NUM_ENVS" -eq 1 ]; then
+        if [ "$ARG" -gt 1 ] 2>/dev/null; then
+            NEEDS_SINGLE_SERVER=0
+        fi
+        EXPECT_NUM_ENVS=0
+        continue
+    fi
+    case "$ARG" in
+        --jpype)
+            NEEDS_SINGLE_SERVER=0
+            ;;
+        --num-envs)
+            EXPECT_NUM_ENVS=1
+            ;;
+        --num-envs=*)
+            NUM_ENVS="${ARG#*=}"
+            if [ "$NUM_ENVS" -gt 1 ] 2>/dev/null; then
+                NEEDS_SINGLE_SERVER=0
+            fi
+            ;;
+    esac
+done
+
+if [ "$NEEDS_SINGLE_SERVER" -eq 0 ]; then
+    echo "Training mode manages its own bridge process(es)."
+    exec python3 python/examples/train_ppo.py "$@"
+fi
+
 # Build the Java server
 echo "Building Java bridge server..."
-export JAVA_HOME=$(/usr/libexec/java_home -v 17 2>/dev/null || echo "$JAVA_HOME")
-./gradlew :gym-bridge:classes --quiet
+./gradlew :gym-bridge:installDist --quiet
 
 # Start the Java server in the background
 echo "Starting bridge server on port 9876..."
-./gradlew :gym-bridge:run --quiet &
+./gym-bridge/build/install/gym-bridge/bin/gym-bridge &
 SERVER_PID=$!
 
 # Clean up server on exit

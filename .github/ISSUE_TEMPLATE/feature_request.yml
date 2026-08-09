@@ -1,5 +1,6 @@
+# Modified by NextoCR from the Apache-2.0 crforge issue template.
 name: Feature Request
-description: Suggest a new feature or improvement
+description: Suggest a NextoCR simulator, data, or research feature
 title: "[Feature] "
 labels: ["enhancement"]
 body:
@@ -30,6 +31,8 @@ body:
         - data
         - desktop
         - gym-bridge
+        - python / RL
+        - data provenance
     validations:
       required: false
 

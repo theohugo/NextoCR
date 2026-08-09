@@ -1,9 +1,12 @@
+// Modified by NextoCR contributors; see NOTICE for attribution.
 package org.crforge.core.entity.projectile;
 
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
+import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.Setter;
 import org.crforge.core.card.AreaEffectStats;
@@ -19,8 +22,13 @@ import org.crforge.core.player.Team;
 public class Projectile {
 
   private static final float DEFAULT_SPEED = 15f; // Tiles per second
-  private static long nextId = 1;
-  private final long id;
+  // Kept for projectiles built outside a GameState. spawnProjectile replaces this temporary ID.
+  private static final AtomicLong DETACHED_ID_SEQUENCE = new AtomicLong(1);
+  private long id;
+
+  @Getter(AccessLevel.NONE)
+  private boolean gameIdAssigned;
+
   private final Entity source;
   private final Entity target;
   private final Team team;
@@ -113,7 +121,7 @@ public class Projectile {
       float speed,
       List<EffectStats> effects,
       int crownTowerDamagePercent) {
-    this.id = nextId++;
+    this.id = DETACHED_ID_SEQUENCE.getAndIncrement();
     this.source = source;
     this.target = target;
     this.team = source.getTeam();
@@ -156,7 +164,7 @@ public class Projectile {
       float speed,
       List<EffectStats> effects,
       int crownTowerDamagePercent) {
-    this.id = nextId++;
+    this.id = DETACHED_ID_SEQUENCE.getAndIncrement();
     this.source = null;
     this.target = null;
     this.team = team;
@@ -211,8 +219,23 @@ public class Projectile {
     }
   }
 
+  /** Assigns the deterministic ID allocated by the {@code GameState} owning this projectile. */
+  public final synchronized void assignGameId(long id) {
+    if (id <= 0) {
+      throw new IllegalArgumentException("Projectile ID must be positive");
+    }
+    if (gameIdAssigned) {
+      throw new IllegalStateException("Projectile already has a game ID: " + this.id);
+    }
+    this.id = id;
+    this.gameIdAssigned = true;
+  }
+
+  /**
+   * Resets IDs for detached projectiles only. Running games use their own world-local allocator.
+   */
   public static void resetIdCounter() {
-    nextId = 1;
+    DETACHED_ID_SEQUENCE.set(1);
   }
 
   /** Update projectile position. Returns true if projectile reached target. */

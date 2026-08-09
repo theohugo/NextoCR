@@ -1,3 +1,4 @@
+# Modified by NextoCR contributors; see NOTICE for attribution.
 # Gradle
 .gradle/
 build/
@@ -58,3 +59,4 @@ CLAUDE.md
 
 # Internal scratch/planning files
 scratch/
+.local/

@@ -1,3 +1,4 @@
+# Modified by NextoCR contributors; see NOTICE for attribution.
 """
 End-to-end integration tests for the CRForge bridge.
 
@@ -36,7 +37,7 @@ class TestBridgeClient:
 
     def test_init_reset_step_close(self):
         """Full lifecycle: init -> reset -> 100 steps -> close."""
-        client = BridgeClient(ENDPOINT)
+        client = BridgeClient(ENDPOINT, binary_obs=False)
         client.connect()
 
         try:
@@ -77,7 +78,7 @@ class TestBridgeClient:
 
     def test_step_with_action(self):
         """Verify that submitting an action works."""
-        client = BridgeClient(ENDPOINT)
+        client = BridgeClient(ENDPOINT, binary_obs=False)
         client.connect()
 
         try:
@@ -96,7 +97,7 @@ class TestBridgeClient:
 
     def test_deterministic_seeding(self):
         """Same seed produces identical deck shuffles across resets."""
-        client = BridgeClient(ENDPOINT)
+        client = BridgeClient(ENDPOINT, binary_obs=False)
         client.connect()
 
         try:
@@ -122,7 +123,7 @@ class TestBridgeClient:
 
     def test_action_failed_flag(self):
         """Submitting an unaffordable card reports actionFailed."""
-        client = BridgeClient(ENDPOINT)
+        client = BridgeClient(ENDPOINT, binary_obs=False)
         client.connect()
 
         try:
@@ -151,7 +152,7 @@ class TestCRForgeEnv:
 
     def test_env_lifecycle(self):
         """Create env, reset, step, close."""
-        env = CRForgeEnv(endpoint=ENDPOINT, ticks_per_step=6)
+        env = CRForgeEnv(endpoint=ENDPOINT, ticks_per_step=6, binary_obs=False)
 
         try:
             obs, info = env.reset(seed=42)
@@ -175,7 +176,7 @@ class TestCRForgeEnv:
 
     def test_observation_space_containment(self):
         """Observations must be within the declared observation space."""
-        env = CRForgeEnv(endpoint=ENDPOINT, ticks_per_step=6)
+        env = CRForgeEnv(endpoint=ENDPOINT, ticks_per_step=6, binary_obs=False)
 
         try:
             obs, _ = env.reset(seed=42)
@@ -197,7 +198,7 @@ class TestCRForgeEnv:
 
     def test_seed_determinism(self):
         """Same seed produces same initial observation."""
-        env = CRForgeEnv(endpoint=ENDPOINT, ticks_per_step=6)
+        env = CRForgeEnv(endpoint=ENDPOINT, ticks_per_step=6, binary_obs=False)
 
         try:
             obs1, _ = env.reset(seed=42)

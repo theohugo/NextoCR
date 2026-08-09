@@ -1,5 +1,6 @@
+# Modified by NextoCR from the Apache-2.0 crforge issue template.
 name: Bug Report
-description: Report a bug in crforge
+description: Report a reproducible NextoCR engine, data, or RL-interface bug
 title: "[Bug] "
 labels: ["bug"]
 body:

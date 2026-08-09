@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Modified by NextoCR contributors; see NOTICE for attribution.
 """
 Run random episodes against the CRForge simulation.
 
@@ -40,6 +41,7 @@ def main():
         endpoint=args.endpoint,
         ticks_per_step=args.ticks_per_step,
         opponent="random",
+        binary_obs=False,
     )
 
     try:

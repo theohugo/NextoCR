@@ -1,3 +1,4 @@
+// Modified by NextoCR contributors; see NOTICE for attribution.
 package org.crforge.bridge.observation;
 
 import java.nio.ByteBuffer;
@@ -375,7 +376,8 @@ public class BinaryObservationEncoder {
     obs[laneIdx + 4] = Math.min(leftFriendlyHp / MAX_LANE_HP, 1f);
     obs[laneIdx + 5] = Math.min(rightFriendlyHp / MAX_LANE_HP, 1f);
     obs[laneIdx + 6] = (blueElixir - redElixir) / 10f;
-    obs[laneIdx + 7] = (float) (friendlyCount - enemyCount) / MAX_ENTITIES;
+    obs[laneIdx + 7] =
+        Math.max(-1f, Math.min(1f, (float) (friendlyCount - enemyCount) / MAX_ENTITIES));
   }
 
   /** Encodes up to 3 towers for a team into the obs buffer. Returns the updated index. */

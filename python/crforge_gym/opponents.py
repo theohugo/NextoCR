@@ -1,3 +1,4 @@
+# Modified by NextoCR contributors; see NOTICE for attribution.
 """
 Opponent policies for CRForge environments.
 
@@ -265,9 +266,8 @@ class SelfPlayOpponent:
     runs the model to get an action, and mirrors the action back to
     red's coordinate space.
 
-    Supports both binary and JSON observation modes. In binary mode,
-    receives the flat observation array and mirrors it directly using
-    array index manipulation.
+    Requires JSON observation mode because the current binary schema includes only the blue hand.
+    Silently reusing that hand for the red policy would produce invalid self-play actions.
     """
 
     def __init__(self, model):
@@ -389,11 +389,11 @@ class SelfPlayOpponent:
         6. Map zone to red's coordinate space via mirrored zone table
         """
         if obs_flat is not None:
-            # Binary mode: mirror the flat array directly
-            mirrored_flat = self.mirror_flat_obs(obs_flat)
-            mask = self._compute_mask_from_flat(mirrored_flat)
-            action, _ = self.model.predict(mirrored_flat, action_masks=mask, deterministic=False)
-        elif obs_raw is not None:
+            raise ValueError(
+                "binary self-play is unsupported until observations encode the red hand; "
+                "use binary_obs=False"
+            )
+        if obs_raw is not None:
             # JSON mode: original path
             mirrored = self.mirror_raw_obs(obs_raw)
             dict_obs = parse_observation(mirrored)

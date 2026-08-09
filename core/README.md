@@ -1,4 +1,7 @@
-# CRForge Core
+# NextoCR core
+
+> **Modified-file notice:** this document derives from the Apache-2.0 crforge core README and was
+> updated by NextoCR.
 
 Headless Clash Royale simulation engine. No GUI dependencies - can run at 1000x+ real-time speed.
 
@@ -7,7 +10,7 @@ Headless Clash Royale simulation engine. No GUI dependencies - can run at 1000x+
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                         GameEngine                              │
-│  Coordinates all systems, runs simulation at 30 FPS             │
+│  Coordinates all systems, runs simulation at 20 TPS             │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
 │  ┌─────────┐  ┌──────────────────┐  ┌─────────────────────────┐ │
@@ -51,8 +54,8 @@ Extend `Match` to create new modes:
 // Standard 1v1 (included)
 public class Standard1v1Match extends Match {
     public int getMaxPlayersPerTeam() { return 1; }
-    public int getMatchDurationTicks() { return 180 * 30; } // 3 min
-    public int getOvertimeDurationTicks() { return 120 * 30; } // 2 min
+    public int getMatchDurationTicks() { return 180 * 20; } // 3 min
+    public int getOvertimeDurationTicks() { return 120 * 20; } // 2 min
 }
 
 // Example: 2v2 mode
@@ -169,7 +172,10 @@ org.crforge.core/
 ./gradlew :core:test --tests "GameEngineTest"
 ```
 
-## Cards (15 Starter Cards)
+## Starter-card examples
+
+These examples are only a small introduction. Audit the complete data-driven coverage from the
+repository root with `python scripts/card_catalog_report.py`.
 
 | Card | Type | Cost | Notes |
 |------|------|------|-------|
