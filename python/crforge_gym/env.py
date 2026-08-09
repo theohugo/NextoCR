@@ -1,3 +1,4 @@
+# Modified by NextoCR contributors; see NOTICE for attribution.
 """
 Gymnasium environment for CRForge.
 
@@ -25,8 +26,8 @@ Observation space:
   Binary mode (default): flat Box(shape=(1079,)) float32 vector.
   JSON mode: Dict with structured game state arrays (all float32 for SB3 compatibility).
 
-Default ticks_per_step=6 gives ~5 decisions/second (~900 steps per 3-min game).
-Use ticks_per_step=1 for fine-grained control (30 decisions/sec, ~5400 steps/game).
+Default ticks_per_step=6 gives ~3.33 decisions/second (~600 steps per 3-min game).
+Use ticks_per_step=1 for fine-grained control (20 decisions/sec, ~3600 steps/game).
 """
 
 from typing import Any
@@ -293,7 +294,8 @@ def parse_observation(obs_raw: dict) -> dict[str, np.ndarray]:
         min(left_friendly_hp / _MAX_LANE_HP, 1.0),
         min(right_friendly_hp / _MAX_LANE_HP, 1.0),
         (blue_elixir - red_elixir) / 10.0,         # [-1, 1] elixir advantage
-        (friendly_count - enemy_count) / MAX_ENTITIES,  # troop count advantage
+        np.clip((friendly_count - enemy_count) / MAX_ENTITIES, -1.0, 1.0),
+        # troop-count advantage, saturated to the declared observation bounds
     ], dtype=np.float32)
 
     return {
@@ -330,7 +332,7 @@ class CRForgeEnv(gym.Env):
         blue_deck: list of 8 card IDs for the blue player
         red_deck: list of 8 card IDs for the red player
         level: card/tower level (1-15, default 11)
-        ticks_per_step: how many simulation ticks per env.step() call (default 6 = ~5 decisions/sec)
+        ticks_per_step: how many simulation ticks per env.step() call (default 6 = ~3.33 decisions/sec)
         opponent: opponent policy ("random", "noop", "rule_based", or callable)
         invalid_action_penalty: reward penalty for submitting an action that fails (default -0.01)
         binary_obs: use binary observation protocol (default True, much faster)
@@ -420,6 +422,10 @@ class CRForgeEnv(gym.Env):
     ) -> tuple[np.ndarray | dict[str, np.ndarray], dict]:
         super().reset(seed=seed)
         self._rng = np.random.default_rng(seed)
+        # RuleBasedOpponent stores the generator it was constructed with. Recreate it so repeated
+        # resets with the same seed replay the same heuristic choices instead of continuing the
+        # previous episode's random stream.
+        self._rule_based_opponent = None
 
         # Forward seed to Java server for deterministic deck shuffling
         if seed is not None:
@@ -547,7 +553,11 @@ class CRForgeEnv(gym.Env):
 
         if self._rule_based_opponent is None:
             self._rule_based_opponent = RuleBasedOpponent(rng=self._rng)
-        return self._rule_based_opponent.act(self._last_obs_raw, player="red")
+        return self._rule_based_opponent.act(
+            self._last_obs_raw,
+            player="red",
+            obs_flat=self._last_obs_flat,
+        )
 
     def _parse_observation(self, obs_raw: dict) -> dict[str, np.ndarray]:
         return parse_observation(obs_raw)

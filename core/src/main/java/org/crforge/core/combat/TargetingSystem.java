@@ -1,8 +1,10 @@
+// Modified by NextoCR contributors; see NOTICE for attribution.
 package org.crforge.core.combat;
 
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.Objects;
 import java.util.Random;
 import org.crforge.core.component.Combat;
 import org.crforge.core.effect.AppliedEffect;
@@ -25,11 +27,26 @@ public class TargetingSystem {
   private final Random rng;
 
   public TargetingSystem() {
-    this(42);
+    this(42L);
   }
 
   public TargetingSystem(long seed) {
-    this.rng = new Random(seed);
+    this(new Random(seed));
+  }
+
+  /**
+   * Creates a targeting system backed by the supplied random stream.
+   *
+   * <p>Injecting the stream lets an engine own all episode randomness instead of hiding an
+   * unrelated fixed seed inside this system.
+   */
+  public TargetingSystem(Random rng) {
+    this.rng = Objects.requireNonNull(rng, "rng");
+  }
+
+  /** Restarts random target selection from {@code seed} for a new episode. */
+  public void reset(long seed) {
+    rng.setSeed(seed);
   }
 
   public void updateTargets(Collection<Entity> entities) {

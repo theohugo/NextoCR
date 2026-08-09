@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Modified by NextoCR contributors; see NOTICE for attribution.
 """
 Evaluate a trained PPO model on CRForge.
 
@@ -33,7 +34,7 @@ def main():
         from sb3_contrib import MaskablePPO
     except ImportError:
         print("Error: sb3-contrib not installed.")
-        print("Install with: pip install -e \"python/[train]\"")
+        print("Install with: pip install -e \"python[train]\"")
         sys.exit(1)
 
     from crforge_gym import CRForgeEnv

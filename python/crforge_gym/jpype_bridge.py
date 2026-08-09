@@ -1,3 +1,4 @@
+# Modified by NextoCR contributors; see NOTICE for attribution.
 """
 In-process JVM bridge using JPype for zero-IPC CRForge RL training.
 
@@ -19,30 +20,42 @@ import numpy as np
 _jvm_lock = threading.Lock()
 
 
-def _find_project_root() -> str:
-    """Walk up from this package directory to find the directory containing gradlew."""
-    path = os.path.dirname(os.path.abspath(__file__))
+def _is_windows(os_name: str | None = None) -> bool:
+    """Return whether *os_name* (or the current platform) is Windows."""
+    return (os_name or os.name) == "nt"
+
+
+def _gradle_wrapper_path(project_root: str, os_name: str | None = None) -> str:
+    """Return the native Gradle wrapper path for the requested platform."""
+    wrapper = "gradlew.bat" if _is_windows(os_name) else "gradlew"
+    return os.path.join(project_root, wrapper)
+
+
+def _find_project_root(
+    start_path: str | None = None, os_name: str | None = None
+) -> str:
+    """Walk upwards until the native Gradle wrapper is found."""
+    path = start_path or os.path.dirname(os.path.abspath(__file__))
+    path = os.path.abspath(path)
     for _ in range(10):
-        if os.path.isfile(os.path.join(path, "gradlew")):
+        if os.path.isfile(_gradle_wrapper_path(path, os_name)):
             return path
         path = os.path.dirname(path)
     raise FileNotFoundError(
-        "Cannot find project root (gradlew not found). "
+        "Cannot find project root (native Gradle wrapper not found). "
         "Run from the crforge project directory."
     )
 
 
-def _ensure_jars_built(project_root: str) -> str:
-    """Ensure installDist has been run. Returns the lib directory path."""
+def _ensure_jars_built(project_root: str, os_name: str | None = None) -> str:
+    """Incrementally refresh installDist and return its library directory."""
     import subprocess
 
     lib_dir = os.path.join(
         project_root, "gym-bridge", "build", "install", "gym-bridge", "lib"
     )
-    if os.path.isdir(lib_dir) and os.listdir(lib_dir):
-        return lib_dir
 
-    print("Building gym-bridge distribution for JPype...")
+    print("Refreshing gym-bridge distribution for JPype...")
     java_home = os.environ.get("JAVA_HOME", "")
     if not java_home:
         try:
@@ -57,7 +70,11 @@ def _ensure_jars_built(project_root: str) -> str:
         env["JAVA_HOME"] = java_home
 
     result = subprocess.run(
-        [os.path.join(project_root, "gradlew"), ":gym-bridge:installDist", "-q"],
+        [
+            _gradle_wrapper_path(project_root, os_name),
+            ":gym-bridge:installDist",
+            "-q",
+        ],
         cwd=project_root,
         capture_output=True,
         text=True,
@@ -65,7 +82,13 @@ def _ensure_jars_built(project_root: str) -> str:
     )
     if result.returncode != 0:
         raise RuntimeError(f"gradle installDist failed:\n{result.stderr}")
-    print("Build complete.")
+    if not os.path.isdir(lib_dir) or not any(
+        name.endswith(".jar") for name in os.listdir(lib_dir)
+    ):
+        raise RuntimeError(
+            "gradle installDist completed, but no JAR was found in " f"{lib_dir}"
+        )
+    print("Distribution is up to date.")
     return lib_dir
 
 

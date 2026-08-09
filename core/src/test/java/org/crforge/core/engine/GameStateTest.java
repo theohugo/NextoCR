@@ -1,12 +1,18 @@
+// Modified by NextoCR contributors; see NOTICE for attribution.
 package org.crforge.core.engine;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.util.HashSet;
+import java.util.Set;
 import org.crforge.core.arena.Arena;
 import org.crforge.core.arena.TileType;
 import org.crforge.core.card.LevelScaling;
 import org.crforge.core.component.Health;
+import org.crforge.core.component.Position;
 import org.crforge.core.entity.base.AbstractEntity;
+import org.crforge.core.entity.projectile.Projectile;
 import org.crforge.core.entity.structure.Tower;
 import org.crforge.core.entity.unit.Troop;
 import org.crforge.core.player.Team;
@@ -51,6 +57,127 @@ class GameStateTest {
     gameState.processPending();
 
     assertThat(troop.isSpawned()).isTrue();
+  }
+
+  @Test
+  void ids_shouldBeUniqueAcrossEntitiesAndProjectilesWithinAWorld() {
+    Troop source =
+        Troop.builder().name("Source").team(Team.BLUE).position(new Position(1, 1)).build();
+    Troop target =
+        Troop.builder().name("Target").team(Team.RED).position(new Position(2, 2)).build();
+
+    gameState.spawnEntity(source);
+    gameState.spawnEntity(target);
+    Projectile projectile = new Projectile(source, target, 10);
+    gameState.spawnProjectile(projectile);
+
+    assertThat(source.getId()).isEqualTo(1);
+    assertThat(target.getId()).isEqualTo(2);
+    assertThat(projectile.getId()).isEqualTo(3);
+  }
+
+  @Test
+  void reset_shouldOnlyResetTheOwningWorldIdSequence() {
+    GameState otherState = new GameState();
+    Troop firstHere = Troop.builder().name("Here").team(Team.BLUE).build();
+    Troop firstThere = Troop.builder().name("There 1").team(Team.RED).build();
+    Troop secondThere = Troop.builder().name("There 2").team(Team.RED).build();
+
+    gameState.spawnEntity(firstHere);
+    otherState.spawnEntity(firstThere);
+    otherState.spawnEntity(secondThere);
+    gameState.reset();
+
+    Troop afterResetHere = Troop.builder().name("Here reset").team(Team.BLUE).build();
+    Troop afterResetThere = Troop.builder().name("There 3").team(Team.RED).build();
+    gameState.spawnEntity(afterResetHere);
+    otherState.spawnEntity(afterResetThere);
+
+    assertThat(afterResetHere.getId()).isEqualTo(1);
+    assertThat(afterResetThere.getId()).isEqualTo(3);
+  }
+
+  @Test
+  void spawning_shouldNotChangeObjectIdentityHashing() {
+    // Consume one detached ID so the entity's numeric ID is guaranteed to change on spawn.
+    Troop.builder().name("Detached").team(Team.BLUE).build();
+    Troop troop = Troop.builder().name("Tracked").team(Team.BLUE).build();
+    long detachedId = troop.getId();
+    Set<Troop> tracked = new HashSet<>();
+    tracked.add(troop);
+
+    gameState.spawnEntity(troop);
+
+    assertThat(troop.getId()).isNotEqualTo(detachedId);
+    assertThat(tracked).contains(troop);
+  }
+
+  @Test
+  void sameLocalIdInDifferentWorlds_shouldNotMakeEntitiesEqual() {
+    GameState otherState = new GameState();
+    Troop here = Troop.builder().name("Here").team(Team.BLUE).build();
+    Troop there = Troop.builder().name("There").team(Team.BLUE).build();
+
+    gameState.spawnEntity(here);
+    otherState.spawnEntity(there);
+
+    assertThat(here.getId()).isEqualTo(there.getId());
+    assertThat(here).isNotEqualTo(there);
+  }
+
+  @Test
+  void entity_shouldRejectDoubleSpawnAndTransferToAnotherWorld() {
+    GameState otherState = new GameState();
+    Troop troop = Troop.builder().name("Knight").team(Team.BLUE).build();
+    gameState.spawnEntity(troop);
+
+    assertThatThrownBy(() -> gameState.spawnEntity(troop))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("already has a game ID");
+    assertThatThrownBy(() -> otherState.spawnEntity(troop))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("already has a game ID");
+    assertThat(gameState.getPendingSpawns()).containsExactly(troop);
+    assertThat(otherState.getPendingSpawns()).isEmpty();
+  }
+
+  @Test
+  void projectile_shouldRejectDoubleSpawnAndTransferToAnotherWorld() {
+    GameState otherState = new GameState();
+    Troop source = Troop.builder().team(Team.BLUE).position(new Position(1, 1)).build();
+    Troop target = Troop.builder().team(Team.RED).position(new Position(2, 2)).build();
+    gameState.spawnEntity(source);
+    gameState.spawnEntity(target);
+    Projectile projectile = new Projectile(source, target, 10);
+    gameState.spawnProjectile(projectile);
+
+    assertThatThrownBy(() -> gameState.spawnProjectile(projectile))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("already has a game ID");
+    assertThatThrownBy(() -> otherState.spawnProjectile(projectile))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("already has a game ID");
+    assertThat(gameState.getProjectiles()).containsExactly(projectile);
+    assertThat(otherState.getProjectiles()).isEmpty();
+  }
+
+  @Test
+  void refreshCaches_shouldRejectDuplicateEntityIds() {
+    GameState otherState = new GameState();
+    Troop here = Troop.builder().name("Here").team(Team.BLUE).build();
+    Troop there = Troop.builder().name("There").team(Team.RED).build();
+    gameState.spawnEntity(here);
+    otherState.spawnEntity(there);
+    gameState.processPending();
+    otherState.processPending();
+    assertThat(here.getId()).isEqualTo(there.getId());
+
+    // Simulate a caller bypassing spawnEntity through the currently exposed mutable list.
+    gameState.getEntities().add(there);
+
+    assertThatThrownBy(gameState::refreshCaches)
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("Duplicate entity ID");
   }
 
   @Test

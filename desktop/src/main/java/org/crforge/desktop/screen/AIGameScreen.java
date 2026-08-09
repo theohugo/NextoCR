@@ -1,3 +1,4 @@
+// Modified by NextoCR contributors; see NOTICE for attribution.
 package org.crforge.desktop.screen;
 
 import com.badlogic.gdx.Gdx;
@@ -187,7 +188,7 @@ public class AIGameScreen implements Screen {
     zmqThread =
         new Thread(
             () -> {
-              String endpoint = "tcp://*:" + port;
+              String endpoint = "tcp://127.0.0.1:" + port;
               try (ZContext ctx = new ZContext()) {
                 ZMQ.Socket socket = ctx.createSocket(SocketType.PAIR);
                 socket.bind(endpoint);

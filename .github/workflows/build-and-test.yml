@@ -1,4 +1,8 @@
+# Modified by NextoCR from the Apache-2.0 crforge CI workflow.
 name: Build and Test
+
+permissions:
+  contents: read
 
 on:
   push:
@@ -24,8 +28,63 @@ jobs:
         with:
           gradle-version: wrapper
 
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
       - name: Build with Gradle
         run: ./gradlew build
 
-      - name: Run Tests
-        run: ./gradlew test
+      - name: Audit card catalog
+        run: python3 scripts/card_catalog_report.py --strict
+
+      - name: Test catalog tooling
+        run: python3 -m unittest discover -s scripts/tests -v
+
+      - name: Install Python package
+        run: python -m pip install -e ./python pytest build
+
+      - name: Build and inspect Python wheel
+        run: |
+          python -m build --wheel ./python --outdir .local/dist
+          python - <<'PY'
+          import glob
+          import zipfile
+
+          wheels = glob.glob(".local/dist/*.whl")
+          assert len(wheels) == 1, wheels
+          with zipfile.ZipFile(wheels[0]) as archive:
+              names = archive.namelist()
+              assert not any(name.endswith(".pyc") or "/__pycache__/" in name for name in names), names
+              assert any(name.endswith(".dist-info/licenses/LICENSE") for name in names), names
+              assert any(name.endswith(".dist-info/licenses/NOTICE") for name in names), names
+              metadata_name = next(name for name in names if name.endswith(".dist-info/METADATA"))
+              metadata = archive.read(metadata_name).decode("utf-8")
+          assert "License-Expression: Apache-2.0" in metadata
+          assert "Description-Content-Type: text/markdown" in metadata
+          PY
+
+      - name: Run Python unit tests
+        run: python -m pytest python/tests -q
+
+      - name: Run ZMQ bridge integration tests
+        shell: bash
+        run: |
+          mkdir -p .local
+          ./gradlew :gym-bridge:installDist
+          ./gym-bridge/build/install/gym-bridge/bin/gym-bridge \
+            >.local/gym-bridge.log 2>&1 &
+          bridge_pid=$!
+          trap 'kill "$bridge_pid" 2>/dev/null || true' EXIT
+          for _ in {1..50}; do
+            if grep -q "Waiting for client connection" .local/gym-bridge.log; then
+              break
+            fi
+            sleep 0.2
+          done
+          if ! grep -q "Waiting for client connection" .local/gym-bridge.log; then
+            tail -n 100 .local/gym-bridge.log
+            exit 1
+          fi
+          CRFORGE_INTEGRATION=1 python -m pytest python/tests/test_integration.py -q

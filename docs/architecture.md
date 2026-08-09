@@ -1,7 +1,11 @@
-# crforge -- Architecture Overview
+# NextoCR architecture overview
 
-crforge is a deterministic tick-based Clash Royale simulator using Component-Entity-System (CES)
-architecture. Entities hold data, systems hold logic, and the engine ticks at 30 FPS for
+> **Modified-file notice:** this page derives from the Apache-2.0 crforge architecture document and
+> was updated by NextoCR.
+
+NextoCR currently uses the inherited crforge deterministic tick-based simulator and its
+Component-Entity-System (CES) architecture. Entities hold data, systems hold logic, and the engine
+ticks at 20 TPS for
 reproducible RL/AI training.
 
 This page is an index into the detailed reference docs. Each sub-doc covers a focused area of the
@@ -81,7 +85,7 @@ graph LR
 ## Module Structure
 
 ```
-crforge/
+nextocr/
   core/           Headless simulation (no GUI dependencies)
   data/           Card/unit config loading (JSON -> Card objects)
   desktop/        LibGDX visualization (ShapeRenderer debug view)

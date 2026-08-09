@@ -1,5 +1,8 @@
 # Card Implementation Tracker
 
+> **Modified-file notice:** this tracker derives from the Apache-2.0 crforge documentation and was
+> corrected by NextoCR so its summary matches the detailed tables below.
+
 Internal names often differ from the in-game display names (e.g. `zapmachine` = Sparky,
 `assassin` = Bandit). See the "Internal ID" column for our internal identifier and "CR Name" for
 the live game name.
@@ -180,9 +183,9 @@ Crown Towers. This system is not yet implemented in crforge.
 
 | Status     | Count   | Description                                 |
 |------------|---------|---------------------------------------------|
-| `DONE`     | 113     | Fully functional in simulation              |
-| `PARTIAL`  | 7       | In cards.json but missing complex mechanics |
-| `MISSING`  | 11      | Not yet implemented or newer cards          |
+| `DONE`     | 112     | Fully functional in simulation              |
+| `PARTIAL`  | 6       | In cards.json but missing complex mechanics |
+| `MISSING`  | 10      | Not yet implemented or newer cards          |
 | Sub-entity | 9       | Internal entities, not playable cards       |
 | **Total**  | **128** | Playable cards (excluding sub-entities)     |
 

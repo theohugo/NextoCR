@@ -1,3 +1,4 @@
+// Modified by NextoCR from the Apache-2.0 crforge implementation.
 package org.crforge.bridge.observation;
 
 import org.crforge.bridge.dto.RewardDTO;
@@ -13,11 +14,11 @@ import org.crforge.core.player.Team;
  * <p>Reward sources:
  *
  * <ul>
- *   <li>Tower damage: +0.001 per HP of damage dealt to enemy towers (light gradient signal)
+ *   <li>Tower damage: +/-0.005 per HP delta (symmetric gradient signal)
  *   <li>Crown earned: +10.0 per crown (tower destruction is the primary milestone)
  *   <li>Game win: +30.0
  *   <li>Game loss: -30.0
- *   <li>Game draw: -2.0 (draws are always net negative)
+ *   <li>Game draw: -10.0 for each player (draws are always net negative)
  *   <li>Elixir waste penalty: -0.02 when elixir is capped at 10
  *   <li>Time penalty: -0.001 per step (discourages passive play)
  * </ul>

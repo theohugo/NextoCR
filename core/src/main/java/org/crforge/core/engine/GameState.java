@@ -1,3 +1,4 @@
+// Modified by NextoCR contributors; see NOTICE for attribution.
 package org.crforge.core.engine;
 
 import java.util.ArrayList;
@@ -8,6 +9,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.function.Predicate;
+import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.Setter;
 import org.crforge.core.arena.Arena;
@@ -37,6 +39,10 @@ public class GameState {
   private List<Entity> cachedRedAlive;
   private List<AreaEffect> cachedAreaEffects;
   private Map<Long, Entity> entityById;
+
+  @Getter(AccessLevel.NONE)
+  private long nextGameObjectId;
+
   @Setter private Arena arena;
   @Setter private DeathHandler deathHandler;
   private int frameCount;
@@ -57,17 +63,30 @@ public class GameState {
     this.cachedRedAlive = Collections.emptyList();
     this.cachedAreaEffects = Collections.emptyList();
     this.entityById = Collections.emptyMap();
+    this.nextGameObjectId = 1;
     this.frameCount = 0;
     this.gameOver = false;
     this.winner = null;
   }
 
   public void spawnEntity(Entity entity) {
+    if (!(entity instanceof AbstractEntity abstractEntity)) {
+      throw new IllegalArgumentException("GameState only supports AbstractEntity implementations");
+    }
+    abstractEntity.assignGameId(allocateGameObjectId());
     pendingSpawns.add(entity);
   }
 
   public void spawnProjectile(Projectile projectile) {
+    projectile.assignGameId(allocateGameObjectId());
     projectiles.add(projectile);
+  }
+
+  private long allocateGameObjectId() {
+    if (nextGameObjectId == Long.MAX_VALUE) {
+      throw new IllegalStateException("Game object ID space exhausted");
+    }
+    return nextGameObjectId++;
   }
 
   public void removeEntity(Entity entity) {
@@ -188,7 +207,10 @@ public class GameState {
     Map<Long, Entity> byId = new HashMap<>(entities.size() * 2);
 
     for (Entity e : entities) {
-      byId.put(e.getId(), e);
+      Entity previous = byId.put(e.getId(), e);
+      if (previous != null) {
+        throw new IllegalStateException("Duplicate entity ID in GameState: " + e.getId());
+      }
       if (e instanceof AreaEffect ae) {
         areaEffects.add(ae);
       }
@@ -320,9 +342,9 @@ public class GameState {
     cachedRedAlive = Collections.emptyList();
     cachedAreaEffects = Collections.emptyList();
     entityById = Collections.emptyMap();
+    nextGameObjectId = 1;
     frameCount = 0;
     gameOver = false;
     winner = null;
-    AbstractEntity.resetIdCounter();
   }
 }

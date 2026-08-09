@@ -1,3 +1,4 @@
+# Modified by NextoCR contributors; see NOTICE for attribution.
 """
 Wrappers for CRForge environments.
 
@@ -30,14 +31,14 @@ class EpisodeStatsWrapper(gym.Wrapper):
 
     Also adds info["game_outcome"]: "win", "loss", or "draw" based on the
     terminal step reward (win/loss bonus of +/-30 dominates any per-step shaping,
-    draw penalty is -2).
+    draw penalty is -10).
 
     Wrap order: EpisodeStatsWrapper(CRForgeEnv(...))
     Place this innermost, before FlattenedObsWrapper and ActionMaskedWrapper.
     """
 
     # Terminal step reward threshold for classifying game outcome.
-    # Win bonus is +30, loss penalty is -30, draw penalty is -2.
+    # Win bonus is +30, loss penalty is -30, draw penalty is -10.
     _WIN_THRESHOLD = 20.0
     _LOSS_THRESHOLD = -20.0
 

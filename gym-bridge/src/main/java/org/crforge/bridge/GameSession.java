@@ -1,3 +1,4 @@
+// Modified by NextoCR contributors; see NOTICE for attribution.
 package org.crforge.bridge;
 
 import java.util.List;
@@ -10,6 +11,7 @@ import org.crforge.bridge.dto.StepResultDTO;
 import org.crforge.bridge.observation.ObservationBuilder;
 import org.crforge.bridge.observation.RewardCalculator;
 import org.crforge.core.card.Card;
+import org.crforge.core.engine.ActionReceipt;
 import org.crforge.core.engine.GameEngine;
 import org.crforge.core.match.Standard1v1Match;
 import org.crforge.core.player.Deck;
@@ -87,10 +89,11 @@ public class GameSession {
     // repeated resets within the same session get different shuffles.
     Random blueRandom;
     Random redRandom;
+    Long episodeSeed = null;
     if (seed != null) {
-      long derivedSeed = (seedOverride != null) ? seed : seed + resetCount;
-      blueRandom = new Random(derivedSeed);
-      redRandom = new Random(derivedSeed + 1);
+      episodeSeed = (seedOverride != null) ? seed : seed + resetCount;
+      blueRandom = new Random(episodeSeed);
+      redRandom = new Random(episodeSeed + 1);
     } else {
       blueRandom = new Random();
       redRandom = new Random();
@@ -107,12 +110,16 @@ public class GameSession {
 
     if (engine == null) {
       // First reset: create a new engine
-      engine = new GameEngine();
+      engine = episodeSeed != null ? new GameEngine(episodeSeed) : new GameEngine();
       engine.setMatch(match);
       engine.initMatch();
     } else {
       // Subsequent resets: reuse the engine, just reset match state
-      engine.resetForNewMatch(match);
+      if (episodeSeed != null) {
+        engine.resetForNewMatch(match, episodeSeed);
+      } else {
+        engine.resetForNewMatch(match);
+      }
     }
 
     rewardCalculator.reset(engine.getGameState(), bluePlayer, redPlayer);
@@ -134,41 +141,7 @@ public class GameSession {
    * @return step result with observation, reward, terminated, truncated, and action failure flags
    */
   public StepResultDTO step(StepAction blueAction, StepAction redAction) {
-    // Track elixir before to detect failed actions
-    boolean blueAttempted = blueAction != null && !blueAction.isNoop();
-    boolean redAttempted = redAction != null && !redAction.isNoop();
-    float blueElixirBefore = bluePlayer.getElixir().getCurrent();
-    float redElixirBefore = redPlayer.getElixir().getCurrent();
-
-    // Queue actions if not no-op
-    if (blueAttempted) {
-      PlayerActionDTO action =
-          PlayerActionDTO.play(blueAction.handIndex(), blueAction.x(), blueAction.y());
-      engine.queueAction(bluePlayer, action);
-    }
-    if (redAttempted) {
-      PlayerActionDTO action =
-          PlayerActionDTO.play(redAction.handIndex(), redAction.x(), redAction.y());
-      engine.queueAction(redPlayer, action);
-    }
-
-    // Detect action failure: if elixir didn't decrease, the action was rejected
-    boolean blueActionFailed =
-        blueAttempted && bluePlayer.getElixir().getCurrent() >= blueElixirBefore;
-    boolean redActionFailed = redAttempted && redPlayer.getElixir().getCurrent() >= redElixirBefore;
-
-    // Run simulation for ticksPerStep ticks
-    engine.tick(ticksPerStep);
-
-    // Build observation and compute reward
-    ObservationDTO observation = ObservationBuilder.build(engine, bluePlayer, redPlayer);
-    RewardDTO reward = rewardCalculator.computeReward(engine.getGameState());
-
-    boolean terminated = engine.getGameState().isGameOver() || !engine.isRunning();
-    boolean truncated = false;
-
-    return new StepResultDTO(
-        observation, reward, terminated, truncated, blueActionFailed, redActionFailed);
+    return executeStep(blueAction, redAction, true);
   }
 
   /**
@@ -180,40 +153,44 @@ public class GameSession {
    * @return step result with null observation (caller reads obs separately), reward, and flags
    */
   public StepResultDTO stepBinary(StepAction blueAction, StepAction redAction) {
-    // Track elixir before to detect failed actions
-    boolean blueAttempted = blueAction != null && !blueAction.isNoop();
-    boolean redAttempted = redAction != null && !redAction.isNoop();
-    float blueElixirBefore = bluePlayer.getElixir().getCurrent();
-    float redElixirBefore = redPlayer.getElixir().getCurrent();
+    return executeStep(blueAction, redAction, false);
+  }
 
-    // Queue actions if not no-op
-    if (blueAttempted) {
-      PlayerActionDTO action =
-          PlayerActionDTO.play(blueAction.handIndex(), blueAction.x(), blueAction.y());
-      engine.queueAction(bluePlayer, action);
-    }
-    if (redAttempted) {
-      PlayerActionDTO action =
-          PlayerActionDTO.play(redAction.handIndex(), redAction.x(), redAction.y());
-      engine.queueAction(redPlayer, action);
-    }
+  private StepResultDTO executeStep(
+      StepAction blueAction, StepAction redAction, boolean includeObservation) {
+    ActionReceipt blueReceipt = submitAction(bluePlayer, blueAction);
+    ActionReceipt redReceipt = submitAction(redPlayer, redAction);
 
-    // Detect action failure: if elixir didn't decrease, the action was rejected
-    boolean blueActionFailed =
-        blueAttempted && bluePlayer.getElixir().getCurrent() >= blueElixirBefore;
-    boolean redActionFailed = redAttempted && redPlayer.getElixir().getCurrent() >= redElixirBefore;
-
-    // Run simulation for ticksPerStep ticks
+    // The first tick drains the deployment queue and resolves both receipts. Elixir spending and
+    // hand cycling remain in DeploymentSystem, at the same point in the simulation as before.
     engine.tick(ticksPerStep);
 
-    // Compute reward only (no DTO observation construction)
+    ObservationDTO observation =
+        includeObservation ? ObservationBuilder.build(engine, bluePlayer, redPlayer) : null;
     RewardDTO reward = rewardCalculator.computeReward(engine.getGameState());
-
     boolean terminated = engine.getGameState().isGameOver() || !engine.isRunning();
-    boolean truncated = false;
 
     return new StepResultDTO(
-        null, reward, terminated, truncated, blueActionFailed, redActionFailed);
+        observation,
+        reward,
+        terminated,
+        false,
+        actionFailed(blueReceipt),
+        actionFailed(redReceipt));
+  }
+
+  private ActionReceipt submitAction(Player player, StepAction action) {
+    if (action == null || action.isNoop()) {
+      return null;
+    }
+    return engine.queueAction(
+        player, PlayerActionDTO.play(action.handIndex(), action.x(), action.y()));
+  }
+
+  private boolean actionFailed(ActionReceipt receipt) {
+    // A receipt should resolve on the first tick. Treat an unresolved receipt as not accepted so
+    // stopped/terminal engines cannot accidentally report success.
+    return receipt != null && !receipt.isAccepted();
   }
 
   /** Returns the current observation without stepping. */

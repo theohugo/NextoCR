@@ -1,10 +1,12 @@
+// Modified by NextoCR contributors; see NOTICE for attribution.
 package org.crforge.core.entity.base;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicLong;
+import lombok.AccessLevel;
 import lombok.Builder;
-import lombok.EqualsAndHashCode;
 import lombok.Getter;
 import lombok.Setter;
 import lombok.ToString;
@@ -21,13 +23,17 @@ import org.crforge.core.player.Team;
 
 @Getter
 @SuperBuilder
-@EqualsAndHashCode(onlyExplicitlyIncluded = true)
 @ToString(of = {"id", "name", "team"})
 public abstract class AbstractEntity implements Entity {
 
-  private static long nextId = 1;
+  // Kept for entities built outside a GameState. The owning GameState replaces this temporary ID
+  // with an ID from its world-local sequence when the entity is spawned.
+  private static final AtomicLong DETACHED_ID_SEQUENCE = new AtomicLong(1);
 
-  @EqualsAndHashCode.Include @Builder.Default protected final long id = nextId++;
+  @Builder.Default protected long id = DETACHED_ID_SEQUENCE.getAndIncrement();
+
+  @Getter(AccessLevel.NONE)
+  private boolean gameIdAssigned;
 
   protected final String name;
   protected final Team team;
@@ -51,8 +57,21 @@ public abstract class AbstractEntity implements Entity {
 
   @Setter @Builder.Default protected boolean invulnerable = false;
 
+  /** Assigns the deterministic ID allocated by the {@code GameState} owning this entity. */
+  public final synchronized void assignGameId(long id) {
+    if (id <= 0) {
+      throw new IllegalArgumentException("Entity ID must be positive");
+    }
+    if (gameIdAssigned) {
+      throw new IllegalStateException("Entity already has a game ID: " + this.id);
+    }
+    this.id = id;
+    this.gameIdAssigned = true;
+  }
+
+  /** Resets IDs for detached entities only. Running games use their own world-local allocator. */
   public static void resetIdCounter() {
-    nextId = 1;
+    DETACHED_ID_SEQUENCE.set(1);
   }
 
   @Override
