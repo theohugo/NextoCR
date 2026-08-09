@@ -40,8 +40,9 @@ both ZMQ and in-process JPype bridges to Python.
 - Gymnasium environment with compact binary observations and action masking.
 - ZMQ process bridge and a faster in-process JPype backend.
 - Parallel single-JVM rollouts through `ThreadedJPypeVecEnv`.
-- PPO, behavioral-cloning, evaluation, benchmark, rule-based opponent, and a single-environment
-  JSON self-play prototype.
+- Reproducible MaskablePPO training, durable checkpoints, bounded self-play league, fixed
+  rule-based evaluation, and exact pause/resume semantics.
+- Local web manager for runs, versions, metrics, logs, checkpoints, and abstract match replays.
 - Optional LibGDX debug visualizer; the headless engine has no GUI dependency.
 
 The exact coverage and known gaps are tracked in [docs/card_tracker.md](docs/card_tracker.md). Run
@@ -78,6 +79,26 @@ Requirements:
 
 - Java 17
 - Python 3.10 or newer for RL tooling
+
+### Recommended on Windows: one-file launcher
+
+Double-click [`NextoCR.bat`](NextoCR.bat). On its first launch it creates `.venv` and installs the
+training dependencies; later launches open the existing manager directly at
+`http://127.0.0.1:8765/`.
+
+From the local dashboard you can:
+
+- start the 10-million-step Mortar mirror self-play run;
+- follow steps, throughput, ETA, outcomes, evaluation, league state, and logs;
+- create a checkpoint while training continues;
+- use **Pause + checkpoint** before shutting down the PC, then **Resume** the next day;
+- create a new version from an immutable checkpoint without overwriting its parent run;
+- generate and watch a deterministic abstract match played by the selected checkpoint.
+
+Closing the browser tab does not stop training. Use **Pause + checkpoint** and wait for the
+confirmation before turning off the computer. The manager binds only to `127.0.0.1` and never
+controls the official game client. See [docs/manager.md](docs/manager.md) for the lifecycle and
+recovery details.
 
 ### 1. Verify the simulator
 
