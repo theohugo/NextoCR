@@ -48,10 +48,23 @@ type ReplayEntity = {
 
 type ReplayTower = ReplayEntity & { tower: true };
 
+type ReplayCard = {
+  id: string;
+  label: string;
+  badge: string;
+  cost: number;
+};
+
+type ReplayPlayer = {
+  elixir: number;
+  hand: ReplayCard[];
+};
+
 type ReplayFrame = {
   t: number;
   entities: ReplayEntity[];
   towers: ReplayTower[];
+  players: { blue: ReplayPlayer; red: ReplayPlayer };
 };
 
 type ReplayData = {
@@ -273,6 +286,13 @@ function formatDuration(seconds: number | null | undefined): string {
   return `${days} j ${hours % 24} h`;
 }
 
+function formatElixir(value: number): string {
+  return new Intl.NumberFormat("fr-FR", {
+    minimumFractionDigits: 1,
+    maximumFractionDigits: 1,
+  }).format(value || 0);
+}
+
 function formatClock(seconds: number | null | undefined): string {
   const safe = Math.max(0, Number(seconds) || 0);
   const minutes = Math.floor(safe / 60);
@@ -357,6 +377,13 @@ const UNIT_LABELS: Record<string, { label: string; badge: string }> = {
   fireball: { label: "Boule de feu", badge: "BF" },
   crown: { label: "Tour du roi", badge: "K" },
   princess: { label: "Tour de princesse", badge: "T" },
+  // Cards in hand, named after the card rather than the unit it summons. The
+  // badge deliberately repeats the summoned unit's, so a card leaving the hand
+  // can be matched with what appears on the arena.
+  goblins: { label: "Gobelins", badge: "GO" },
+  minions: { label: "Gargouilles", badge: "GA" },
+  rascals: { label: "Canailles", badge: "CA" },
+  barblog: { label: "Tonneau de barbares", badge: "TB" },
 };
 
 /** Split an internal name into words so unknown units stay readable, not a single letter. */
@@ -419,8 +446,22 @@ function defaultTowers(): ReplayTower[] {
   ];
 }
 
+function normalisePlayer(rawValue: unknown): ReplayPlayer {
+  const raw = record(rawValue);
+  const hand = array(raw.hand).slice(0, 4).map((cardValue, index) => {
+    const card = record(cardValue);
+    const identifier = stringFrom(card.id, card.name, `carte-${index}`);
+    // The catalog names a card after the unit it summons, so the arena lookup
+    // resolves both; an unknown card still degrades to a readable label.
+    const { label, badge } = describeUnit(stringFrom(card.id, card.name, identifier));
+    return { id: identifier, label, badge, cost: numberFrom(card.cost) };
+  });
+  return { elixir: Math.max(0, Math.min(10, numberFrom(raw.elixir))), hand };
+}
+
 function normaliseFrame(rawValue: any, index: number): ReplayFrame {
   const raw = record(rawValue);
+  const players = record(raw.players);
   const entities = array(raw.entities).map((item, entityIndex) =>
     normaliseEntity(item, entityIndex),
   );
@@ -441,6 +482,10 @@ function normaliseFrame(rawValue: any, index: number): ReplayFrame {
     t: numberFrom(raw.t, raw.time, raw.elapsed, index / 10),
     entities,
     towers: towers.length ? towers : defaultTowers(),
+    players: {
+      blue: normalisePlayer(players.blue ?? raw.bluePlayer),
+      red: normalisePlayer(players.red ?? raw.redPlayer),
+    },
   };
 }
 
@@ -502,6 +547,56 @@ function StatusPill({ status }: { status: string }) {
       <span className="status-dot" aria-hidden="true" />
       {statusLabels[status] ?? statusLabels.unknown}
     </span>
+  );
+}
+
+const ELIXIR_CAPACITY = 10;
+const HAND_SLOTS = 4;
+
+/** Hand and elixir for one side, mirroring the arena: red above, blue below. */
+function PlayerHud({ player, side }: { player: ReplayPlayer; side: "blue" | "red" }) {
+  const team = side === "blue" ? "NextoCR" : "Adversaire";
+  const slots = Array.from({ length: HAND_SLOTS }, (_, index) => player.hand[index] ?? null);
+  return (
+    <div className={`arena-hud ${side}`}>
+      <div className="hud-identity">
+        <span className="hud-team">{team}</span>
+        <strong className="hud-elixir-value">{formatElixir(player.elixir)}</strong>
+      </div>
+      <div
+        className="hud-elixir"
+        role="img"
+        aria-label={`Élixir : ${formatElixir(player.elixir)} sur ${ELIXIR_CAPACITY}`}
+      >
+        {Array.from({ length: ELIXIR_CAPACITY }, (_, index) => (
+          <i key={index}>
+            {/* A partial pip shows the elixir still filling, not a rounded value. */}
+            <b style={{ width: `${Math.max(0, Math.min(1, player.elixir - index)) * 100}%` }} />
+          </i>
+        ))}
+      </div>
+      <ul className="hud-hand">
+        {slots.map((card, index) =>
+          card ? (
+            <li
+              key={`${card.id}-${index}`}
+              // Affordability is the link between the two readings: a dimmed
+              // card is one the policy could not have played on this frame.
+              className={card.cost > player.elixir ? "is-locked" : ""}
+              title={`${card.label} · ${card.cost} élixir`}
+            >
+              <span className="hud-card-badge">{card.badge}</span>
+              <span className="hud-card-name">{card.label}</span>
+              <span className="hud-card-cost">{card.cost}</span>
+            </li>
+          ) : (
+            <li key={`empty-${index}`} className="is-empty" aria-hidden="true">
+              <span className="hud-card-badge">—</span>
+            </li>
+          ),
+        )}
+      </ul>
+    </div>
   );
 }
 
@@ -1383,6 +1478,7 @@ export function Dashboard() {
                   </div>
                 ) : (
                   <>
+                    {currentFrame && <PlayerHud player={currentFrame.players.red} side="red" />}
                     <div
                       className={`arena ${!currentFrame ? "arena-empty" : ""}`}
                       style={{ "--frame-duration": `${frameTransitionMs}ms` } as CSSProperties}
@@ -1438,6 +1534,7 @@ export function Dashboard() {
                         </div>
                       )}
                     </div>
+                    {currentFrame && <PlayerHud player={currentFrame.players.blue} side="blue" />}
 
                     <div className="playback-controls">
                       <button
