@@ -6,9 +6,10 @@ This product includes software developed by voonhous.
 NextoCR
 Copyright 2026 NextoCR contributors
 
-NextoCR is a modified derivative of crforge. The upstream Git history is
-preserved at https://github.com/theohugo/NextoCR and the original project is
-available at https://github.com/voonhous/crforge.
+NextoCR is a modified derivative of crforge. It was originally created as a
+GitHub fork of crforge and is now maintained as a standalone repository. The
+upstream Git history is preserved at https://github.com/theohugo/NextoCR and
+the original project is available at https://github.com/voonhous/crforge.
 
 ---
 

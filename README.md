@@ -18,10 +18,12 @@ The project starts from the mature simulation work in
 zero. The inherited engine is deterministic, data-driven, extensively tested, and already exposes
 both ZMQ and in-process JPype bridges to Python.
 
-> **Derivative-work notice:** NextoCR is an independent project, not a GitHub fork of another
-> repository. It is nonetheless a **modified derivative work of `crforge`**, copyright 2025-2026
-> voonhous, used and redistributed under the Apache License 2.0, and it carries that project's
-> full commit history. Existing Java packages and the compatibility Python package keep the
+> **Origin and derivative-work notice:** NextoCR **started as a GitHub fork** of
+> [`voonhous/crforge`](https://github.com/voonhous/crforge) and is now maintained as a standalone
+> repository: it keeps the full upstream commit history, but it has its own roadmap, no `upstream`
+> remote, and it is not kept in sync with that project. NextoCR nonetheless remains a **modified
+> derivative work of `crforge`**, copyright 2025-2026 voonhous, used and redistributed under the
+> Apache License 2.0. Existing Java packages and the compatibility Python package keep the
 > `org.crforge` / `crforge_gym` names for now. See [NOTICE](NOTICE) for the complete attribution.
 
 > [!WARNING]

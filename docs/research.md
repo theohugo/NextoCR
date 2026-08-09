@@ -29,9 +29,11 @@ NextoCR uses `crforge` as its starting point because it is the only reviewed pro
 5. Python Gymnasium access without requiring the renderer;
 6. both process-isolated and in-process rollout paths.
 
-The GitHub fork relationship and upstream commit history are intentionally preserved. Java package
-names remain `org.crforge` and the original Python import remains `crforge_gym` so that upstream
-changes can still be merged with manageable conflicts.
+NextoCR was created as a GitHub fork of `crforge` and then detached into a standalone repository.
+The upstream commit history is intentionally preserved, but the project no longer tracks an
+`upstream` remote and does not merge upstream automatically. Java package names remain
+`org.crforge` and the original Python import remains `crforge_gym` so that upstream patches can
+still be cherry-picked manually with manageable conflicts.
 
 ## What is borrowed versus referenced
 
