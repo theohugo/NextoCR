@@ -286,6 +286,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="Fixed evaluation opponent (default: rule_based for self-play, otherwise training opponent)",
     )
     parser.add_argument("--deck-profile", default="mortar_self_play_v1")
+    parser.add_argument(
+        "--deck-mode",
+        choices=["profile", "random", "random_mirror"],
+        default="profile",
+        help="profile keeps one fixed deck; random draws a fresh coherent deck "
+             "for both players every episode (random_mirror gives both the same one)",
+    )
+    parser.add_argument(
+        "--match-memory",
+        action="store_true",
+        help="Append own-cycle and revealed-opponent-card memory to the observation",
+    )
+    parser.add_argument(
+        "--elixir-shaping",
+        type=float,
+        default=0.0,
+        help="Per-episode budget for elixir-trade reward shaping; 0 disables it",
+    )
+    parser.add_argument(
+        "--auto-scale",
+        action="store_true",
+        help="Size --num-envs and torch threads to this machine, leaving it usable",
+    )
     parser.add_argument("--checkpoint-freq", type=int, default=100000,
                         help="Periodic checkpoint interval; 0 disables")
     parser.add_argument("--eval-freq", type=int, default=0,
@@ -513,6 +536,21 @@ def main(argv: list[str] | None = None) -> int:
         "rule_based" if args.opponent == "self_play" else args.opponent
     )
     backend = "jpype" if args.jpype else "zmq"
+    hardware_plan = None
+    if args.auto_scale:
+        import torch
+
+        from crforge_gym.hardware import plan_training_resources
+
+        hardware_plan = plan_training_resources(
+            requested_envs=args.num_envs if args.num_envs > 1 else None
+        )
+        # Self-play still drives one environment; the thread budget is the part
+        # that helps there, since about half the wall clock is the PPO update.
+        if args.opponent != "self_play" and not args.jpype:
+            args.num_envs = hardware_plan.num_envs
+        torch.set_num_threads(hardware_plan.torch_threads)
+        print(f"Auto-scale: {hardware_plan.describe()}")
     hash_seed_at_start = os.environ.get("PYTHONHASHSEED") == str(args.seed)
     seed_metadata = seed_everything(args.seed, args.deterministic_torch)
 
@@ -522,8 +560,12 @@ def main(argv: list[str] | None = None) -> int:
         "observation_preprocessing": OBSERVATION_PREPROCESSING_SCHEMA,
         "deck_profile": deck_profile.profile_id,
         "deck": deck_profile.to_manifest(),
+        "deck_mode": args.deck_mode,
+        "match_memory": bool(args.match_memory),
+        "elixir_shaping_budget": float(args.elixir_shaping),
+        "hardware_plan": hardware_plan.to_manifest() if hardware_plan else None,
         "curriculum": {
-            "stage": "mirror",
+            "stage": "mirror" if args.deck_mode != "random" else "random_decks",
             "opponent_catalog_snapshot": None,
         },
         "seed": args.seed,
@@ -688,6 +730,28 @@ def main(argv: list[str] | None = None) -> int:
                     rank=rank,
                     checkpoint_timesteps=start_timesteps,
                 )
+                if args.deck_mode != "profile":
+                    from crforge_gym.deck_sampler import RandomDeckWrapper
+
+                    # Offset by rank so parallel environments explore different
+                    # decks instead of replaying one stream in lockstep.
+                    env = RandomDeckWrapper(
+                        env,
+                        seed=(eval_seed if evaluation else args.seed) + rank * 7919,
+                        mirror=args.deck_mode == "random_mirror",
+                    )
+                if args.elixir_shaping > 0:
+                    from crforge_gym.elixir_rewards import (
+                        ElixirTradeRewardWrapper,
+                        TradeRewardConfig,
+                    )
+
+                    # Shaping belongs below the episode statistics so the logged
+                    # episode reward is the one PPO actually optimises.
+                    env = ElixirTradeRewardWrapper(
+                        env,
+                        TradeRewardConfig(episode_shaping_limit=args.elixir_shaping),
+                    )
                 env = DeterministicEpisodeSeedWrapper(env, episode_seed)
                 env = EpisodeStatsWrapper(env)
                 if evaluation:
@@ -695,6 +759,12 @@ def main(argv: list[str] | None = None) -> int:
                 if not binary_observations:
                     env = FlattenedObsWrapper(env)
                 env = StaticObservationPreprocessingWrapper(env)
+                if args.match_memory:
+                    from crforge_gym.match_memory import MatchMemoryObservationWrapper
+
+                    # Above the static preprocessing, which requires the exact
+                    # legacy width, and below the action wrapper.
+                    env = MatchMemoryObservationWrapper(env)
                 env = ExactDiscreteActionWrapper(env)
                 env.action_space.seed(episode_seed)
                 env.observation_space.seed(episode_seed)

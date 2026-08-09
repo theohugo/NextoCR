@@ -110,9 +110,15 @@ class ElixirEconomyTracker:
         return float(player.get("elixir", 0.0) or 0.0)
 
     def _index_entities(self, observation: dict[str, Any], team: str) -> dict[int, float]:
-        entities = observation.get("entities") or []
+        entities = observation.get("entities")
+        # A parsed observation stores numpy arrays under the same keys, and the
+        # trade signal can only be read from the raw entity records.
+        if not isinstance(entities, list):
+            return {}
         indexed: dict[int, float] = {}
         for entity in entities:
+            if not isinstance(entity, dict):
+                continue
             if str(entity.get("team", "")).upper() != team:
                 continue
             identifier = entity.get("id")
@@ -192,16 +198,25 @@ class ElixirTradeRewardWrapper(gym.Wrapper):
         super().__init__(env)
         self.tracker = ElixirEconomyTracker(config, table)
 
+    def _raw_observation(self) -> dict[str, Any]:
+        """Read the untouched bridge payload.
+
+        The observation handed to a wrapper is already parsed into numpy
+        arrays, which loses the entity identities the trade signal is built
+        from, so the environment's retained raw dictionary is used instead.
+        """
+        raw = getattr(self.env.unwrapped, "_last_obs_raw", None)
+        return raw if isinstance(raw, dict) else {}
+
     def reset(self, **kwargs: Any):
         observation, info = self.env.reset(**kwargs)
         self.tracker.reset()
-        if isinstance(observation, dict):
-            self.tracker.update(observation)
+        self.tracker.update(self._raw_observation())
         return observation, info
 
     def step(self, action: Any):
         observation, reward, terminated, truncated, info = self.env.step(action)
-        shaping = self.tracker.update(observation)
+        shaping = self.tracker.update(self._raw_observation())
         if shaping:
             info = dict(info)
             info["elixir_shaping"] = shaping

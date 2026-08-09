@@ -381,6 +381,31 @@ class SelfPlayOpponent:
         (9.0, 32 - 20.5),   # 9: SPELL_CENTER -> spell on blue's center
     ]
 
+    def _append_match_memory(self, flat_obs: np.ndarray, mirrored: dict) -> np.ndarray:
+        """Give the opponent the same within-match memory as the agent.
+
+        A policy trained with memory features expects a wider observation, and
+        the opponent builds its own vector from the mirrored payload, so it has
+        to maintain its own memory rather than reuse the agent's.
+        """
+        expected = getattr(getattr(self.model, "observation_space", None), "shape", None)
+        if not expected or len(expected) != 1:
+            return flat_obs
+        from crforge_gym.match_memory import MEMORY_FEATURE_COUNT, MatchMemory
+
+        if int(expected[0]) != int(flat_obs.size) + MEMORY_FEATURE_COUNT:
+            return flat_obs
+        frame = int(mirrored.get("frame", 0) or 0)
+        memory = getattr(self, "_match_memory", None)
+        # The opponent is never told an episode ended; a frame counter going
+        # backwards is the only signal that a new match started.
+        if memory is None or frame < getattr(self, "_match_memory_frame", 0):
+            memory = MatchMemory()
+            memory.reset()
+            self._match_memory = memory
+        self._match_memory_frame = frame
+        return np.concatenate([flat_obs, memory.observe(mirrored)]).astype(np.float32)
+
     def act(self, obs_raw: dict | None, player: str = "red", obs_flat: np.ndarray | None = None) -> dict | None:
         """Produce a red-side action from the raw observation.
 
@@ -401,6 +426,7 @@ class SelfPlayOpponent:
             mirrored = self.mirror_raw_obs(obs_raw)
             dict_obs = parse_observation(mirrored)
             flat_obs = _flatten_dict_obs(dict_obs)
+            flat_obs = self._append_match_memory(flat_obs, mirrored)
             mask = self._compute_mask(mirrored)
             action, _ = self.model.predict(flat_obs, action_masks=mask, deterministic=False)
         else:
