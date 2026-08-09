@@ -50,6 +50,7 @@ class CheckpointLeague:
         initial_weight: float = 0.10,
         recent_weight: float = 0.60,
         historical_weight: float = 0.30,
+        read_only: bool = False,
     ):
         if max_recent < 1 or max_historical < 0 or max_loaded_models < 1:
             raise ValueError("league capacities must be max_recent>=1, max_historical>=0, cache>=1")
@@ -71,7 +72,9 @@ class CheckpointLeague:
             "historical": float(historical_weight),
         }
         self._cache: OrderedDict[str, Any] = OrderedDict()
+        self.read_only = bool(read_only)
         self._state = self._load_or_create()
+        self._manifest_mtime = self._current_manifest_mtime()
         self._validate_state()
 
     @property
@@ -152,6 +155,35 @@ class CheckpointLeague:
         }
         self._flush()
         return entry, self._load_model(entry)
+
+    def _current_manifest_mtime(self) -> float:
+        try:
+            return self.manifest_path.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    def refresh(self) -> bool:
+        """Re-read the manifest when the trainer has published a new snapshot.
+
+        Parallel environments learn about new opponents through the file the
+        trainer already writes, so no inter-process channel is needed.
+        """
+        mtime = self._current_manifest_mtime()
+        if mtime == self._manifest_mtime or not self.manifest_path.is_file():
+            return False
+        try:
+            with self.manifest_path.open("r", encoding="utf-8") as handle:
+                state = json.load(handle)
+        except (OSError, json.JSONDecodeError):
+            # A half-written manifest is retried on the next episode boundary.
+            return False
+        sample_count = self._state.get("sampleCount", 0)
+        self._state = state
+        # Sampling position stays local so each environment keeps its own
+        # deterministic stream instead of inheriting the writer's.
+        self._state["sampleCount"] = sample_count
+        self._manifest_mtime = mtime
+        return True
 
     def summary(self) -> dict[str, Any]:
         return {
@@ -277,6 +309,10 @@ class CheckpointLeague:
                 raise FileNotFoundError(f"league checkpoint is missing: {path}")
 
     def _flush(self) -> None:
+        if self.read_only:
+            # Parallel environments only sample; letting each one publish the
+            # manifest would clobber the snapshots the trainer is adding.
+            return
         temporary = self.root / f".league.json.{os.getpid()}.tmp"
         with temporary.open("w", encoding="utf-8", newline="\n") as handle:
             json.dump(self._state, handle, indent=2, sort_keys=True)
@@ -314,6 +350,9 @@ class LeagueSelfPlayOpponent:
             self._last_frame is not None and frame <= self._last_frame
         ):
             self._episode += 1
+            # Pick up snapshots the trainer published since the last episode, so
+            # a parallel environment does not keep facing a stale population.
+            self.league.refresh()
             self.selected_entry, self._delegate.model = self.league.sample()
             if self._on_selection is not None:
                 self._on_selection(self.selected_entry, self._episode)

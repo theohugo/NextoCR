@@ -377,8 +377,8 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error("--batch-size cannot exceed --n-steps * --num-envs")
     if args.eval_freq > 0 and args.eval_episodes == 0:
         parser.error("--eval-freq requires --eval-episodes > 0")
-    if args.opponent == "self_play" and (args.jpype or args.num_envs != 1):
-        parser.error("self_play currently requires one ZMQ environment with JSON observations")
+    if args.opponent == "self_play" and args.jpype:
+        parser.error("self_play requires the ZMQ backend with JSON observations")
     if args.eval_opponent == "self_play" and args.opponent != "self_play":
         parser.error("--eval-opponent self_play requires a self-play training league")
     resolved_eval_opponent = args.eval_opponent or (
@@ -716,6 +716,29 @@ def main(argv: list[str] | None = None) -> int:
         ):
             def initialize():
                 opponent = eval_opponent if evaluation else train_opponent
+                if (
+                    args.opponent == "self_play"
+                    and args.num_envs > 1
+                    and not evaluation
+                ):
+                    # Built inside the worker: a league sampling from disk in
+                    # read-only mode, so parallel environments cannot overwrite
+                    # each other's manifest or the snapshots the trainer adds.
+                    # The seed offset keeps each worker on its own stream
+                    # instead of every one facing the same opponent.
+                    worker_league = CheckpointLeague(
+                        os.path.join(run_dir, "league"),
+                        seed=args.seed + 20_000_000 + rank * 104_729,
+                        model_loader=load_league_model,
+                        max_recent=args.league_max_recent,
+                        max_historical=args.league_max_historical,
+                        max_loaded_models=args.league_model_cache,
+                        initial_weight=args.league_initial_weight,
+                        recent_weight=args.league_recent_weight,
+                        historical_weight=args.league_historical_weight,
+                        read_only=True,
+                    )
+                    opponent = LeagueSelfPlayOpponent(worker_league)
                 env = CRForgeEnv(
                     endpoint=endpoint or "tcp://localhost:9876",
                     blue_deck=list(deck_profile.simulator_card_ids),
