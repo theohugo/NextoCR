@@ -41,6 +41,11 @@ _RESUME_CRITICAL_FIELDS = (
     "observation_preprocessing",
     "deck_profile",
     "deck",
+    # These change the observation width or the reward being optimised, so a
+    # checkpoint trained under different values cannot be resumed.
+    "deck_mode",
+    "match_memory",
+    "elixir_shaping_budget",
     "curriculum",
     "seed",
     "eval_seed",

@@ -339,6 +339,51 @@ function humanOutcome(value: unknown): string {
   return outcomeLabels[key] ?? String(value || "Non disponible");
 }
 
+// The simulator emits internal unit names ("SkeletonContainerNew", "Goblin_Stab").
+// Abbreviating those to a single initial made Mortier, Gargouille and Chariot all
+// render as "M", so every unit carries a readable label and a distinct badge.
+const UNIT_LABELS: Record<string, { label: string; badge: string }> = {
+  barbarian: { label: "Barbare", badge: "BA" },
+  brokencannon: { label: "Canon démonté (chariot détruit)", badge: "CN" },
+  goblin_stab: { label: "Gobelin", badge: "GO" },
+  minion: { label: "Gargouille", badge: "GA" },
+  mortar: { label: "Mortier", badge: "MO" },
+  movingcannon: { label: "Chariot à canon", badge: "CC" },
+  rascalboy: { label: "Canaille (garçon)", badge: "CG" },
+  rascalgirl: { label: "Canaille (fille)", badge: "CF" },
+  skeleton: { label: "Squelette", badge: "SQ" },
+  skeletonballoon: { label: "Fût à squelettes", badge: "FS" },
+  skeletoncontainernew: { label: "Fût à squelettes (projectile)", badge: "FP" },
+  fireball: { label: "Boule de feu", badge: "BF" },
+  crown: { label: "Tour du roi", badge: "K" },
+  princess: { label: "Tour de princesse", badge: "T" },
+};
+
+/** Split an internal name into words so unknown units stay readable, not a single letter. */
+function prettifyUnitName(kind: string): string {
+  const words = kind
+    .replace(/[_-]+/g, " ")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .trim();
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+function describeUnit(kind: string): { label: string; badge: string } {
+  const known = UNIT_LABELS[kind.trim().toLowerCase()];
+  if (known) {
+    return known;
+  }
+  const label = prettifyUnitName(kind);
+  // Initials of each word keep unrelated units visually distinct.
+  const initials = label
+    .split(/\s+/)
+    .map((part) => part[0])
+    .join("")
+    .slice(0, 2)
+    .toUpperCase();
+  return { label, badge: initials || "U" };
+}
+
 function normaliseCoordinate(value: unknown, max: number): number {
   const raw = numberFrom(value);
   const normalised = Math.abs(raw) <= 1 ? raw : raw / max;
@@ -1346,21 +1391,27 @@ export function Dashboard() {
                       <div className="river" aria-hidden="true"><i /><i /></div>
                       {(currentFrame?.towers ?? defaultTowers()).map((tower) => {
                         const health = Math.max(0, Math.min(1, tower.hp / tower.maxHp));
+                        const { label, badge } = describeUnit(tower.kind);
+                        const caption = `${label} · ${formatInteger(tower.hp)} / ${formatInteger(tower.maxHp)} PV`;
                         return (
                           <div
                             className={`arena-tower ${tower.team}`}
                             key={tower.id}
                             style={{ left: `${tower.x * 100}%`, top: `${tower.y * 100}%` }}
-                            title={`${tower.kind} · ${formatInteger(tower.hp)} PV`}
+                            data-label={caption}
+                            role="img"
+                            aria-label={caption}
                           >
-                            <span>{tower.kind.toLowerCase().includes("roi") || tower.kind.toLowerCase().includes("king") ? "K" : "T"}</span>
+                            <span>{badge}</span>
                             <i><b style={{ width: `${health * 100}%` }} /></i>
                           </div>
                         );
                       })}
                       {currentFrame?.entities.map((entity) => {
                         const health = Math.max(0, Math.min(1, entity.hp / entity.maxHp));
-                        const initials = entity.kind.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase();
+                        const { label, badge } = describeUnit(entity.kind);
+                        const side = entity.team === "red" ? "Adversaire" : "NextoCR";
+                        const caption = `${label} · ${side} · ${formatInteger(entity.hp)} / ${formatInteger(entity.maxHp)} PV`;
                         return (
                           <div
                             className={`arena-entity ${entity.team}`}
@@ -1370,9 +1421,11 @@ export function Dashboard() {
                               top: `${entity.y * 100}%`,
                               "--health": `${health * 100}%`,
                             } as CSSProperties}
-                            title={`${entity.kind} · ${formatInteger(entity.hp)} / ${formatInteger(entity.maxHp)} PV`}
+                            data-label={caption}
+                            role="img"
+                            aria-label={caption}
                           >
-                            <span>{initials || "U"}</span>
+                            <span>{badge}</span>
                           </div>
                         );
                       })}

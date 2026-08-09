@@ -62,6 +62,11 @@ def test_sampling_is_seeded_and_model_cache_is_bounded(tmp_path: Path) -> None:
 
 
 class _FakeLeague:
+    def refresh(self) -> bool:
+        # Parallel environments re-read the manifest at every episode
+        # boundary; a fake league has nothing to reload.
+        return False
+
     def __init__(self):
         self.calls = 0
 

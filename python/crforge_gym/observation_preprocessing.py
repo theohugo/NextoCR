@@ -44,11 +44,16 @@ def preprocess_flat_observation(observation: np.ndarray) -> np.ndarray:
     identities remain in the appended identity fields.
     """
     source = np.asarray(observation, dtype=np.float32)
-    if source.ndim < 1 or source.shape[-1] != OBS_SIZE:
+    if source.ndim < 1 or source.shape[-1] < OBS_SIZE:
         raise ValueError(
             f"{OBSERVATION_PREPROCESSING_SCHEMA} requires last dimension {OBS_SIZE}, "
             f"got {source.shape}"
         )
+    if source.shape[-1] > OBS_SIZE:
+        # Appended blocks such as match memory are already bounded features;
+        # normalise the legacy prefix and pass the remainder through untouched.
+        head = preprocess_flat_observation(source[..., :OBS_SIZE])
+        return np.concatenate([head, source[..., OBS_SIZE:]], axis=-1)
     schema_versions = source[..., IDX_OBSERVATION_SCHEMA_VERSION]
     if np.any(schema_versions < OBSERVATION_SCHEMA_VERSION):
         raise ValueError(

@@ -506,6 +506,7 @@ class CRForgeEnv(gym.Env):
         else:
             self._client = BridgeClient(endpoint, binary_obs=binary_obs)
         self._connected = False
+        self._needs_init = True
         self._rng = np.random.default_rng()
         # In JSON mode, stores the raw dict observation for opponents/wrappers
         self._last_obs_raw = None
@@ -522,9 +523,24 @@ class CRForgeEnv(gym.Env):
             "giant", "musketeer", "minions", "valkyrie",
         ]
 
+    def set_decks(self, blue_deck: list[str], red_deck: list[str]) -> None:
+        """Replace both decks, applied at the next reset.
+
+        Training against varied decks needs a new pair every episode, so the
+        session is re-initialised rather than the socket reconnected: dropping
+        the connection would cost a round trip per episode for nothing.
+        """
+        if len(blue_deck) != 8 or len(red_deck) != 8:
+            raise ValueError("a Clash Royale deck must contain exactly eight cards")
+        self.blue_deck = list(blue_deck)
+        self.red_deck = list(red_deck)
+        self._needs_init = True
+
     def _ensure_connected(self) -> None:
         if not self._connected:
             self._client.connect()
+            self._connected = True
+        if self._needs_init:
             self._client.init(
                 self.blue_deck,
                 self.red_deck,
@@ -532,7 +548,7 @@ class CRForgeEnv(gym.Env):
                 ticks_per_step=self.ticks_per_step,
                 seed=self._init_seed,
             )
-            self._connected = True
+            self._needs_init = False
 
     def reset(
         self,
@@ -669,6 +685,8 @@ class CRForgeEnv(gym.Env):
         if self._connected:
             self._client.close()
             self._connected = False
+            # A reconnect starts a fresh session, so the decks must be sent again.
+            self._needs_init = True
 
     def _decode_action(self, action: np.ndarray) -> dict | None:
         """Convert MultiDiscrete action to bridge StepAction dict."""
