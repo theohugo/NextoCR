@@ -17,6 +17,7 @@
   --blue: #75a7ff;
   --red: #ff7f74;
   --amber: #f3b761;
+  --elixir: #c58bf2;
   --radius-lg: 22px;
   --radius-md: 15px;
   --shadow: 0 22px 70px rgba(0, 0, 0, 0.24);
@@ -1697,6 +1698,164 @@ td:first-child {
   line-height: 1.55;
 }
 
+/* Hand and elixir, laid out like the board: the opponent above the arena, the
+   agent below it. Reading a decision needs both halves at once — what was
+   affordable, and what was in hand to spend it on. */
+.arena-hud {
+  display: grid;
+  grid-template-areas:
+    "identity elixir"
+    "hand hand";
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 9px 13px;
+  width: min(100%, 680px);
+  margin: 0 auto;
+  padding: 10px 11px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: var(--surface-soft);
+}
+
+.arena-hud.red {
+  margin-bottom: 10px;
+}
+
+.arena-hud.blue {
+  margin-top: 10px;
+}
+
+.hud-identity {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  grid-area: identity;
+}
+
+.hud-team {
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 750;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.arena-hud.blue .hud-team {
+  color: var(--blue);
+}
+
+.arena-hud.red .hud-team {
+  color: var(--red);
+}
+
+.hud-elixir-value {
+  color: var(--elixir);
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.hud-elixir {
+  display: grid;
+  grid-area: elixir;
+  grid-template-columns: repeat(10, 1fr);
+  gap: 3px;
+}
+
+.hud-elixir i {
+  overflow: hidden;
+  height: 8px;
+  border-radius: 3px;
+  background: rgba(195, 225, 212, 0.08);
+}
+
+/* A partially filled pip: elixir regenerates continuously, and rounding it to
+   whole pips would hide exactly the fraction a decision was waiting on. */
+.hud-elixir i b {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: linear-gradient(180deg, #dcaaff, var(--elixir));
+  transition: width 140ms linear;
+}
+
+.hud-hand {
+  display: grid;
+  grid-area: hand;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.hud-hand li {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 6px 7px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.hud-hand li.is-locked {
+  opacity: 0.4;
+}
+
+.hud-hand li.is-empty {
+  grid-template-columns: 1fr;
+  justify-items: center;
+  color: var(--faint);
+}
+
+.hud-card-badge {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border-radius: 7px;
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 7px;
+  font-weight: 800;
+}
+
+.arena-hud.blue .hud-card-badge {
+  border: 1px solid rgba(117, 167, 255, 0.45);
+  color: #e8f0ff;
+  background: #1e3150;
+}
+
+.arena-hud.red .hud-card-badge {
+  border: 1px solid rgba(255, 127, 116, 0.45);
+  color: #fff0ee;
+  background: #4b2927;
+}
+
+.hud-hand li.is-empty .hud-card-badge {
+  border: 1px dashed var(--line-strong);
+  color: var(--faint);
+  background: none;
+}
+
+.hud-card-name {
+  overflow: hidden;
+  color: #dce7e0;
+  font-size: 9px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hud-card-cost {
+  color: var(--elixir);
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 9px;
+  font-weight: 800;
+}
+
 .playback-controls {
   display: grid;
   grid-template-columns: 38px auto minmax(100px, 1fr) auto auto;
@@ -2078,6 +2237,12 @@ td:first-child {
 }
 
 @media (max-width: 680px) {
+  /* Four cards side by side leave room for two or three letters of a name;
+     two rows of two keep every card readable. */
+  .hud-hand {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .topbar-status {
     margin-left: auto;
   }
