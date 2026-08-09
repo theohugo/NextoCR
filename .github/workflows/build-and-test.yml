@@ -13,6 +13,9 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # Without this a hung step burns the six-hour default before reporting,
+    # and job logs cannot be downloaded while a run is still in progress.
+    timeout-minutes: 40
 
     steps:
       - uses: actions/checkout@v6
@@ -75,13 +78,18 @@ jobs:
 
       - name: Run ZMQ bridge integration tests
         shell: bash
+        timeout-minutes: 12
         run: |
           mkdir -p .local
           ./gradlew :gym-bridge:installDist
-          ./gym-bridge/build/install/gym-bridge/bin/gym-bridge \
-            >.local/gym-bridge.log 2>&1 &
+          # setsid puts the bridge in its own process group and </dev/null
+          # detaches its stdin, so the runner never waits on a surviving JVM
+          # holding the step's pipes open. The group kill reaps the JVM even
+          # when the launcher script is not the process that exec'd it.
+          setsid ./gym-bridge/build/install/gym-bridge/bin/gym-bridge \
+            >.local/gym-bridge.log 2>&1 </dev/null &
           bridge_pid=$!
-          trap 'kill "$bridge_pid" 2>/dev/null || true' EXIT
+          trap 'kill -- "-$bridge_pid" 2>/dev/null || kill "$bridge_pid" 2>/dev/null || true' EXIT
           for _ in {1..50}; do
             if grep -q "Waiting for client connection" .local/gym-bridge.log; then
               break
