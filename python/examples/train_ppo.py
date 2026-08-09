@@ -11,12 +11,11 @@ Prerequisites:
 Usage:
   python python/examples/train_ppo.py
   python python/examples/train_ppo.py --timesteps 1000000 --num-envs 4
-  python python/examples/train_ppo.py --resume models/ppo_crforge --timesteps 50000
-  python python/examples/train_ppo.py --opponent self_play --timesteps 100000
+  python python/examples/train_ppo.py --resume runs/my-run --run-dir runs/my-run --timesteps 50000
+  python python/examples/train_ppo.py --opponent self_play --eval-episodes 0 --timesteps 100000
 """
 
 import argparse
-import atexit
 import json
 import os
 import subprocess
@@ -182,21 +181,16 @@ def launch_servers(base_port: int, num_envs: int) -> list:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             env=env,
+            creationflags=(
+                getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                if _is_windows()
+                else 0
+            ),
         )
         processes.append(proc)
 
     def cleanup():
-        for p in processes:
-            try:
-                p.terminate()
-            except OSError:
-                pass
-        for p in processes:
-            try:
-                p.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                p.kill()
-    atexit.register(cleanup)
+        _terminate_processes(processes)
 
     print(f"Waiting for {num_envs} server(s) on ports {base_port}-{base_port + num_envs - 1}...")
     for i in range(num_envs):
@@ -241,344 +235,696 @@ def check_server(endpoint: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Main
+# Experiment CLI
 # ---------------------------------------------------------------------------
 
-def main():
-    parser = argparse.ArgumentParser(description="Train PPO on CRForge")
-    parser.add_argument("--timesteps", type=int, default=50000,
-                        help="Total training timesteps (default: 50000)")
-    parser.add_argument("--save-path", type=str, default="models/ppo_crforge",
-                        help="Path to save the trained model")
-    parser.add_argument("--endpoint", default="tcp://localhost:9876",
-                        help="Bridge server endpoint (single-env mode)")
-    parser.add_argument("--ticks-per-step", type=int, default=15,
-                        help="Simulation ticks per step (default: 15, ~240 regulation steps, "
-                             "~400 with overtime)")
-    parser.add_argument("--seed", type=int, default=42,
-                        help="Random seed")
-    parser.add_argument("--resume", type=str, default=None,
-                        help="Path to a saved model .zip to resume training from")
-    parser.add_argument("--eval-episodes", type=int, default=10,
-                        help="Number of evaluation episodes after training")
-    parser.add_argument("--log-dir", type=str, default="logs/ppo_crforge",
-                        help="TensorBoard log directory")
-    parser.add_argument("--opponent", type=str, default="rule_based",
-                        choices=["noop", "random", "rule_based", "self_play"],
-                        help="Opponent type (default: rule_based)")
-    parser.add_argument("--self-play-interval", type=int, default=10000,
-                        help="Timesteps between opponent model updates in self-play (default: 10000)")
-    parser.add_argument("--num-envs", type=int, default=1,
-                        help="Number of parallel environments (default: 1). "
-                             "When >1, auto-launches Java bridge servers.")
-    parser.add_argument("--base-port", type=int, default=9876,
-                        help="Base port for auto-launched servers (default: 9876)")
-    parser.add_argument("--jpype", action="store_true",
-                        help="Use in-process JPype backend (no Java server needed)")
-    args = parser.parse_args()
 
-    # Check dependencies
+def _parse_net_arch(value: str) -> list[int]:
     try:
-        from sb3_contrib import MaskablePPO
-        from stable_baselines3.common.callbacks import BaseCallback
-        from stable_baselines3.common.evaluation import evaluate_policy
-        from stable_baselines3.common.vec_env import SubprocVecEnv
-    except ImportError:
-        print("Error: sb3-contrib or stable-baselines3 not installed.")
-        print("Install with: pip install -e \"python[train]\"")
-        sys.exit(1)
+        widths = [int(item.strip()) for item in value.split(",") if item.strip()]
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("net architecture must be comma-separated integers") from exc
+    if not widths or any(width <= 0 for width in widths):
+        raise argparse.ArgumentTypeError("net architecture widths must be positive")
+    return widths
 
-    from collections import deque
 
-    from crforge_gym import CRForgeEnv
-    from crforge_gym.opponents import SelfPlayOpponent
-    from crforge_gym.wrappers import ActionMaskedWrapper, EpisodeStatsWrapper, FlattenedObsWrapper
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Train a reproducible MaskablePPO policy on NextoCR"
+    )
+    parser.add_argument("--timesteps", type=int, default=50000,
+                        help="Additional timesteps to learn (also when resuming)")
+    parser.add_argument("--run-dir", default=None,
+                        help="Artifact directory; generated automatically when omitted")
+    parser.add_argument("--save-path", default=None,
+                        help="Final model path (default: RUN_DIR/final_model)")
+    parser.add_argument("--log-dir", default=None,
+                        help="TensorBoard directory (default: RUN_DIR/tensorboard)")
+    parser.add_argument("--resume", default=None,
+                        help="Checkpoint .zip, extensionless path, or prior run directory")
+    parser.add_argument("--endpoint", default="tcp://localhost:9876",
+                        help="Training bridge endpoint in single-env ZMQ mode")
+    parser.add_argument("--eval-endpoint", default=None,
+                        help="Separate ZMQ endpoint required for periodic single-env evaluation")
+    parser.add_argument("--base-port", type=int, default=9876,
+                        help="First auto-launched ZMQ port when --num-envs > 1")
+    parser.add_argument("--jpype", action="store_true",
+                        help="Use the in-process JPype backend")
+    parser.add_argument("--num-envs", type=int, default=1,
+                        help="Parallel training environments")
+    parser.add_argument("--ticks-per-step", type=int, default=15,
+                        help="15 gives about 240 regulation decisions, 400 with overtime")
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--eval-seed", type=int, default=None)
+    parser.add_argument("--opponent", choices=["noop", "random", "rule_based", "self_play"],
+                        default="rule_based")
+    parser.add_argument(
+        "--eval-opponent",
+        choices=["noop", "random", "rule_based", "self_play"],
+        default=None,
+        help="Fixed evaluation opponent (default: rule_based for self-play, otherwise training opponent)",
+    )
+    parser.add_argument("--deck-profile", default="mortar_self_play_v1")
+    parser.add_argument("--checkpoint-freq", type=int, default=100000,
+                        help="Periodic checkpoint interval; 0 disables")
+    parser.add_argument("--eval-freq", type=int, default=0,
+                        help="Periodic evaluation interval; 0 disables")
+    parser.add_argument("--eval-episodes", type=int, default=10,
+                        help="Episodes per periodic/final evaluation; 0 disables final evaluation")
+    parser.add_argument("--episode-log-interval", type=int, default=50)
+    parser.add_argument("--self-play-interval", type=int, default=10000,
+                        help="Interval between immutable league snapshots")
+    parser.add_argument("--league-max-recent", type=int, default=4)
+    parser.add_argument("--league-max-historical", type=int, default=8)
+    parser.add_argument("--league-model-cache", type=int, default=2)
+    parser.add_argument("--league-initial-weight", type=float, default=0.10)
+    parser.add_argument("--league-recent-weight", type=float, default=0.60)
+    parser.add_argument("--league-historical-weight", type=float, default=0.30)
+    parser.add_argument("--learning-rate", type=float, default=3e-4)
+    parser.add_argument("--n-steps", type=int, default=2048)
+    parser.add_argument("--batch-size", type=int, default=512)
+    parser.add_argument("--n-epochs", type=int, default=10)
+    parser.add_argument("--gamma", type=float, default=0.99)
+    parser.add_argument("--gae-lambda", type=float, default=0.95)
+    parser.add_argument("--clip-range", type=float, default=0.2)
+    parser.add_argument("--ent-coef", type=float, default=0.005)
+    parser.add_argument("--vf-coef", type=float, default=0.5)
+    parser.add_argument("--max-grad-norm", type=float, default=0.5)
+    parser.add_argument("--net-arch", type=_parse_net_arch, default=[512, 256])
+    parser.add_argument("--device", default="cpu", choices=["cpu", "cuda", "auto"])
+    parser.add_argument(
+        "--deterministic-torch",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Request deterministic Torch algorithms (default: enabled)",
+    )
+    parser.add_argument("--progress-bar", action="store_true")
+    return parser
 
-    # Validate flags
-    if args.opponent == "self_play" and args.jpype:
-        print("Error: self-play requires JSON observations with the red player's hand.")
-        print("The JPype backend currently exposes only the binary blue-hand schema.")
-        print("Use the ZMQ backend with --num-envs 1.")
-        sys.exit(1)
-    if args.opponent == "self_play" and args.num_envs > 1:
-        print("Error: self-play is not supported with --num-envs > 1 (subprocess mode).")
-        print("The prototype requires shared opponent state and JSON observations.")
-        print("Use the ZMQ backend with --num-envs 1.")
-        sys.exit(1)
 
-    binary_observations = args.opponent != "self_play"
+def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    positive = {
+        "timesteps": args.timesteps,
+        "num-envs": args.num_envs,
+        "ticks-per-step": args.ticks_per_step,
+        "n-steps": args.n_steps,
+        "batch-size": args.batch_size,
+        "n-epochs": args.n_epochs,
+        "episode-log-interval": args.episode_log_interval,
+        "self-play-interval": args.self_play_interval,
+        "league-max-recent": args.league_max_recent,
+        "league-model-cache": args.league_model_cache,
+    }
+    for name, value in positive.items():
+        if value <= 0:
+            parser.error(f"--{name} must be positive")
+    for name, value in {
+        "checkpoint-freq": args.checkpoint_freq,
+        "eval-freq": args.eval_freq,
+        "eval-episodes": args.eval_episodes,
+        "league-max-historical": args.league_max_historical,
+    }.items():
+        if value < 0:
+            parser.error(f"--{name} must be non-negative")
+    rollout_size = args.n_steps * args.num_envs
+    if rollout_size <= 1:
+        parser.error("--n-steps * --num-envs must exceed one")
+    if args.batch_size > rollout_size:
+        parser.error("--batch-size cannot exceed --n-steps * --num-envs")
+    if args.eval_freq > 0 and args.eval_episodes == 0:
+        parser.error("--eval-freq requires --eval-episodes > 0")
+    if args.opponent == "self_play" and (args.jpype or args.num_envs != 1):
+        parser.error("self_play currently requires one ZMQ environment with JSON observations")
+    if args.eval_opponent == "self_play" and args.opponent != "self_play":
+        parser.error("--eval-opponent self_play requires a self-play training league")
+    resolved_eval_opponent = args.eval_opponent or (
+        "rule_based" if args.opponent == "self_play" else args.opponent
+    )
+    weights = (
+        args.league_initial_weight,
+        args.league_recent_weight,
+        args.league_historical_weight,
+    )
+    if any(weight < 0 for weight in weights) or sum(weights) <= 0:
+        parser.error("league weights must be non-negative and sum to more than zero")
+    if args.eval_freq > 0 and not args.jpype and args.num_envs == 1 and not args.eval_endpoint:
+        parser.error("periodic single-env ZMQ evaluation requires --eval-endpoint")
+    if (
+        args.eval_episodes > 0
+        and not args.jpype
+        and args.num_envs == 1
+        and resolved_eval_opponent != args.opponent
+        and not args.eval_endpoint
+    ):
+        parser.error("a distinct single-env ZMQ evaluation opponent requires --eval-endpoint")
+    if args.eval_endpoint and args.eval_endpoint == args.endpoint:
+        parser.error("--eval-endpoint must differ from --endpoint")
 
-    # -- Server setup --
 
-    server_processes = None
-    if args.jpype:
-        # JPype mode: ensure JARs are built, no server processes needed
-        project_root = _find_project_root()
-        if project_root is None:
-            print("Error: Cannot find project root (gradlew not found).")
-            sys.exit(1)
-        _build_bridge_dist(project_root)
-        print("JPype mode: using in-process JVM (no server processes)")
-    elif args.num_envs > 1:
-        server_processes = launch_servers(args.base_port, args.num_envs)
-    else:
-        # Single-env: check manually started server
-        print(f"Checking Java bridge server at {args.endpoint}...")
-        if not check_server(args.endpoint):
-            print("Error: Cannot connect to the Java bridge server.")
-            print("Start it with: ./gradlew :gym-bridge:run")
-            print("Or use --num-envs N to auto-launch servers.")
-            sys.exit(1)
-        print("Server is running.")
-
-    # -- Self-play callback --
-
-    class SelfPlayCallback(BaseCallback):
-        """Periodically snapshot the training model into the SelfPlayOpponent.
-
-        Every `update_interval` timesteps, save the current model to a
-        checkpoint file and reload it into the opponent. The first iteration
-        starts with the initial (random) policy.
-        """
-
-        def __init__(self, opponent: SelfPlayOpponent, update_interval: int,
-                     checkpoint_dir: str = "models", verbose: int = 0):
-            super().__init__(verbose)
-            self.opponent = opponent
-            self.update_interval = update_interval
-            self.checkpoint_dir = checkpoint_dir
-            self._last_update_step = 0
-
-        def _on_training_start(self) -> None:
-            os.makedirs(self.checkpoint_dir, exist_ok=True)
-            self._snapshot_model(tag="init")
-
-        def _on_step(self) -> bool:
-            elapsed = self.num_timesteps - self._last_update_step
-            if elapsed >= self.update_interval:
-                self._snapshot_model(tag=f"step_{self.num_timesteps}")
-                self._last_update_step = self.num_timesteps
-            return True
-
-        def _snapshot_model(self, tag: str) -> None:
-            path = os.path.join(self.checkpoint_dir, f"self_play_{tag}")
-            self.model.save(path)
-            loaded = MaskablePPO.load(path)
-            self.opponent.model = loaded
-            if self.verbose > 0:
-                print(f"[SelfPlayCallback] Updated opponent at step {self.num_timesteps} ({tag})")
-
-    # -- Episode logging callback --
-
-    class EpisodeLogCallback(BaseCallback):
-        """Tracks and logs game-level statistics: win rate, episode reward, episode length.
-
-        Collects game outcomes from info["game_outcome"] (set by EpisodeStatsWrapper)
-        and logs rolling averages to TensorBoard and stdout.
-        """
-
-        def __init__(self, total_timesteps: int, window_size: int = 100,
-                     log_interval: int = 50, verbose: int = 1):
-            super().__init__(verbose)
-            self.total_timesteps = total_timesteps
-            self.window_size = window_size
-            self.log_interval = log_interval
-            self._outcomes = deque(maxlen=window_size)
-            self._ep_rewards = deque(maxlen=window_size)
-            self._ep_lengths = deque(maxlen=window_size)
-            self._total_episodes = 0
-            self._last_log_episode = 0
-
-        def _on_step(self) -> bool:
-            # With VecEnv, infos is a list of dicts (one per env)
-            infos = self.locals.get("infos", [])
-            for info in infos:
-                if "episode" in info:
-                    self._total_episodes += 1
-                    self._ep_rewards.append(info["episode"]["r"])
-                    self._ep_lengths.append(info["episode"]["l"])
-                    outcome = info.get("game_outcome", "unknown")
-                    self._outcomes.append(outcome)
-
-                    if self._total_episodes - self._last_log_episode >= self.log_interval:
-                        self._log_stats()
-                        self._last_log_episode = self._total_episodes
-
-            return True
-
-        def _on_training_end(self) -> None:
-            if self._total_episodes > 0:
-                self._log_stats()
-
-        def _log_stats(self):
-            n = len(self._outcomes)
-            if n == 0:
-                return
-
-            wins = sum(1 for o in self._outcomes if o == "win")
-            losses = sum(1 for o in self._outcomes if o == "loss")
-            draws = sum(1 for o in self._outcomes if o == "draw")
-            win_rate = wins / n
-            loss_rate = losses / n
-            draw_rate = draws / n
-            avg_reward = sum(self._ep_rewards) / len(self._ep_rewards)
-            avg_length = sum(self._ep_lengths) / len(self._ep_lengths)
-
-            # Log to TensorBoard
-            self.logger.record("game/win_rate", win_rate)
-            self.logger.record("game/loss_rate", loss_rate)
-            self.logger.record("game/draw_rate", draw_rate)
-            self.logger.record("game/ep_reward_mean", avg_reward)
-            self.logger.record("game/ep_length_mean", avg_length)
-            self.logger.record("game/total_episodes", self._total_episodes)
-
-            if self.verbose > 0:
-                pct = self.num_timesteps / self.total_timesteps * 100 if self.total_timesteps > 0 else 0
-                print(
-                    f"[{self.num_timesteps}/{self.total_timesteps} steps ({pct:.0f}%) | "
-                    f"ep {self._total_episodes}] "
-                    f"win={win_rate:.1%} loss={loss_rate:.1%} draw={draw_rate:.1%} | "
-                    f"reward={avg_reward:.1f} len={avg_length:.0f} "
-                    f"(last {n} games)"
-                )
-
-    # -- Opponent setup --
-
-    if args.opponent == "self_play":
-        self_play_opponent = SelfPlayOpponent(model=None)
-        env_opponent = self_play_opponent
-    else:
-        self_play_opponent = None
-        env_opponent = args.opponent
-
-    # -- Environment creation --
-
-    def make_env(endpoint: str | None = None, backend: str = "zmq"):
-        """Factory that returns a no-arg callable for SubprocVecEnv."""
-        def _init():
-            env = CRForgeEnv(
-                endpoint=endpoint or "tcp://localhost:9876",
-                ticks_per_step=args.ticks_per_step,
-                opponent=env_opponent,
-                binary_obs=binary_observations,
-                backend=backend,
+def _terminate_processes(processes: list[subprocess.Popen] | None) -> None:
+    if not processes:
+        return
+    for process in processes:
+        if process.poll() is not None:
+            continue
+        if _is_windows():
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                capture_output=True,
+                text=True,
+                check=False,
             )
-            env = EpisodeStatsWrapper(env)
-            if not binary_observations:
-                env = FlattenedObsWrapper(env)
-            # Binary observations are already flat; JSON self-play is flattened above.
-            env = ActionMaskedWrapper(env)
-            return env
-        return _init
-
-    if args.jpype:
-        if args.num_envs > 1:
-            from crforge_gym import ThreadedJPypeVecEnv
-            env_fns = [make_env(backend="jpype") for _ in range(args.num_envs)]
-            env = ThreadedJPypeVecEnv(env_fns)
-            eval_endpoint = None
         else:
-            env = make_env(backend="jpype")()
-            eval_endpoint = None
-    elif args.num_envs > 1:
-        env_fns = [
-            make_env(f"tcp://localhost:{args.base_port + i}")
-            for i in range(args.num_envs)
-        ]
-        env = SubprocVecEnv(env_fns)
-        # Create a separate single env for evaluation (reuses first server
-        # after training ends, since SubprocVecEnv will have closed its conn)
-        eval_endpoint = f"tcp://localhost:{args.base_port}"
-    else:
-        env = make_env(args.endpoint)()
-        eval_endpoint = None
+            process.terminate()
+    for process in processes:
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
 
-    # -- Model creation --
 
-    if args.resume:
-        print(f"Resuming training from {args.resume}...")
-        model = MaskablePPO.load(args.resume, env=env, tensorboard_log=args.log_dir, verbose=1)
-    else:
-        model = MaskablePPO(
-            "MlpPolicy",
-            env,
-            policy_kwargs={"net_arch": [512, 256]},
-            learning_rate=3e-4,
-            n_steps=2048,
-            batch_size=512,
-            n_epochs=10,
-            gamma=0.99,
-            gae_lambda=0.95,
-            clip_range=0.2,
-            ent_coef=0.005,
-            vf_coef=0.5,
-            max_grad_norm=0.5,
-            seed=args.seed,
-            verbose=1,
-            tensorboard_log=args.log_dir,
+def _validate_resume_hyperparameters(model, args: argparse.Namespace) -> None:
+    expected = {
+        "learning_rate": args.learning_rate,
+        "n_steps": args.n_steps,
+        "batch_size": args.batch_size,
+        "n_epochs": args.n_epochs,
+        "gamma": args.gamma,
+        "gae_lambda": args.gae_lambda,
+        "clip_range": args.clip_range,
+        "ent_coef": args.ent_coef,
+        "vf_coef": args.vf_coef,
+        "max_grad_norm": args.max_grad_norm,
+    }
+    mismatches = []
+    for name, wanted in expected.items():
+        actual = getattr(model, name, None)
+        if name == "clip_range" and callable(actual):
+            actual = actual(1.0)
+        if actual is None or abs(float(actual) - float(wanted)) > 1e-12:
+            mismatches.append(f"{name}={actual!r} (CLI {wanted!r})")
+    if mismatches:
+        raise ValueError(
+            "Resume checkpoint hyperparameters differ from this invocation: "
+            + ", ".join(mismatches)
+        )
+    actual_arch = list(getattr(model.policy, "net_arch", []))
+    if actual_arch != args.net_arch:
+        raise ValueError(
+            "Resume checkpoint network architecture differs from this invocation: "
+            f"net_arch={actual_arch!r} (CLI {args.net_arch!r})"
         )
 
-    # -- Callbacks --
 
-    callbacks = [EpisodeLogCallback(total_timesteps=args.timesteps, window_size=100, log_interval=50, verbose=1)]
-    if args.opponent == "self_play":
-        self_play_opponent.model = model
-        callbacks.append(SelfPlayCallback(
-            opponent=self_play_opponent,
-            update_interval=args.self_play_interval,
-            checkpoint_dir=os.path.dirname(args.save_path) or "models",
-            verbose=1,
-        ))
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    _validate_args(parser, args)
 
-    # -- Training --
+    try:
+        from sb3_contrib import MaskablePPO
+        from stable_baselines3.common.monitor import Monitor
+        from stable_baselines3.common.vec_env import SubprocVecEnv
+    except ImportError:
+        print("Error: training dependencies are not installed.")
+        print("Install with: python -m pip install -e \"python[train,jpype]\"")
+        return 1
 
-    _ensure_save_parent(args.save_path)
-
-    print(f"\nStarting training for {args.timesteps} timesteps...")
-    print(f"Backend: {'jpype (in-process JVM)' if args.jpype else 'zmq'}")
-    print(f"Parallel envs: {args.num_envs}")
-    print(f"Opponent: {args.opponent}")
-    if args.opponent == "self_play":
-        print(f"Self-play update interval: {args.self_play_interval} steps")
-    effective_rollout = 2048 * args.num_envs
-    print(f"Effective rollout size: {effective_rollout} ({args.num_envs} x 2048)")
-    print(f"TensorBoard logs: {args.log_dir}")
-    print(f"Monitor with: tensorboard --logdir {args.log_dir}\n")
-
-    start_time = time.time()
-    model.learn(
-        total_timesteps=args.timesteps,
-        callback=callbacks if callbacks else None,
+    from crforge_gym import (
+        CRForgeEnv,
+        EpisodeStatsWrapper,
+        ExactDiscreteActionWrapper,
+        FlattenedObsWrapper,
     )
-    training_time = time.time() - start_time
+    from crforge_gym.decks import get_deck_profile
+    from crforge_gym.league import (
+        CheckpointLeague,
+        LeagueSelfPlayOpponent,
+        LeagueSnapshotCallback,
+    )
+    from crforge_gym.observation_preprocessing import (
+        OBSERVATION_PREPROCESSING_SCHEMA,
+        PreprocessedPolicyAdapter,
+        StaticObservationPreprocessingWrapper,
+        tag_model_preprocessing,
+        validate_model_preprocessing,
+    )
+    from crforge_gym.training_runtime import (
+        ACTION_SCHEMA,
+        DeterministicEpisodeSeedWrapper,
+        EpisodeMetricsCallback,
+        PeriodicCheckpointCallback,
+        PeriodicEvaluationCallback,
+        RunArtifacts,
+        SignalController,
+        StopRequestedCallback,
+        TrainingCommandChannel,
+        TrainingControlCallback,
+        default_run_dir,
+        derive_episode_seed,
+        evaluate_maskable_policy,
+        infer_run_dir_from_checkpoint,
+        resolve_resume_checkpoint,
+        seed_everything,
+        validate_exact_action_space,
+    )
 
-    print(f"\nTraining completed in {training_time:.1f}s")
-    print(f"Throughput: {args.timesteps / training_time:.0f} steps/sec")
+    try:
+        deck_profile = get_deck_profile(args.deck_profile)
+    except ValueError as exc:
+        parser.error(str(exc))
 
-    # -- Save --
+    resume_path = resolve_resume_checkpoint(args.resume) if args.resume else None
+    inferred_run_dir = infer_run_dir_from_checkpoint(resume_path) if resume_path else None
+    run_dir = os.path.abspath(
+        os.path.expanduser(args.run_dir)
+        if args.run_dir
+        else str(inferred_run_dir or default_run_dir(args.seed))
+    )
+    save_path = os.path.abspath(
+        os.path.expanduser(args.save_path or os.path.join(run_dir, "final_model"))
+    )
+    log_dir = os.path.abspath(
+        os.path.expanduser(args.log_dir or os.path.join(run_dir, "tensorboard"))
+    )
+    eval_seed = args.eval_seed if args.eval_seed is not None else args.seed + 10_000_000
+    eval_opponent_name = args.eval_opponent or (
+        "rule_based" if args.opponent == "self_play" else args.opponent
+    )
+    backend = "jpype" if args.jpype else "zmq"
+    hash_seed_at_start = os.environ.get("PYTHONHASHSEED") == str(args.seed)
+    seed_metadata = seed_everything(args.seed, args.deterministic_torch)
 
-    model.save(args.save_path)
-    print(f"Model saved to {args.save_path}")
+    config = {
+        "schema_version": 1,
+        "action_schema": ACTION_SCHEMA,
+        "observation_preprocessing": OBSERVATION_PREPROCESSING_SCHEMA,
+        "deck_profile": deck_profile.profile_id,
+        "deck": deck_profile.to_manifest(),
+        "curriculum": {
+            "stage": "mirror",
+            "opponent_catalog_snapshot": None,
+        },
+        "seed": args.seed,
+        "eval_seed": eval_seed,
+        "python_hash_seed_effective_at_process_start": hash_seed_at_start,
+        "seed_runtime": seed_metadata,
+        "backend": backend,
+        "num_envs": args.num_envs,
+        "opponent": args.opponent,
+        "evaluation_opponent": eval_opponent_name,
+        "ticks_per_step": args.ticks_per_step,
+        "timesteps_this_attempt": args.timesteps,
+        "checkpoint_freq": args.checkpoint_freq,
+        "eval_freq": args.eval_freq,
+        "eval_episodes": args.eval_episodes,
+        "self_play_interval": args.self_play_interval,
+        "league_max_recent": args.league_max_recent,
+        "league_max_historical": args.league_max_historical,
+        "league_model_cache": args.league_model_cache,
+        "league_initial_weight": args.league_initial_weight,
+        "league_recent_weight": args.league_recent_weight,
+        "league_historical_weight": args.league_historical_weight,
+        "learning_rate": args.learning_rate,
+        "n_steps": args.n_steps,
+        "batch_size": args.batch_size,
+        "n_epochs": args.n_epochs,
+        "gamma": args.gamma,
+        "gae_lambda": args.gae_lambda,
+        "clip_range": args.clip_range,
+        "ent_coef": args.ent_coef,
+        "vf_coef": args.vf_coef,
+        "max_grad_norm": args.max_grad_norm,
+        "net_arch": args.net_arch,
+        "device": args.device,
+        "deterministic_torch": args.deterministic_torch,
+        "run_dir": run_dir,
+        "save_path": save_path,
+        "log_dir": log_dir,
+        "resume_from": str(resume_path) if resume_path else None,
+        "endpoint": args.endpoint,
+        "eval_endpoint": args.eval_endpoint,
+    }
 
-    # -- Evaluate --
+    artifacts = RunArtifacts(run_dir)
+    server_processes: list[subprocess.Popen] | None = None
+    train_env = None
+    eval_env = None
+    model = None
+    initialized_artifacts = False
+    signal_controller = SignalController()
+    training_started = 0.0
+    start_timesteps = 0
+    binary_observations = args.opponent != "self_play"
+    evaluation_requested = args.eval_episodes > 0
 
-    if args.num_envs > 1:
-        # Close the vec env and create a single env for evaluation
-        env.close()
+    try:
         if args.jpype:
-            eval_env = make_env(backend="jpype")()
+            project_root = _find_project_root()
+            if project_root is None:
+                raise FileNotFoundError("Cannot find the native Gradle wrapper")
+            _build_bridge_dist(project_root)
+            print("JPype mode: using an in-process JVM")
+        elif args.num_envs > 1:
+            extra_eval_server = 1 if evaluation_requested else 0
+            server_processes = launch_servers(
+                args.base_port, args.num_envs + extra_eval_server
+            )
         else:
-            eval_env = make_env(eval_endpoint)()
-    else:
-        eval_env = env
+            print(f"Checking training bridge at {args.endpoint}...")
+            if not check_server(args.endpoint):
+                raise ConnectionError(
+                    "Cannot reach the training bridge. Start it with the native Gradle wrapper."
+                )
+            if evaluation_requested and args.eval_endpoint and not check_server(args.eval_endpoint):
+                raise ConnectionError(f"Cannot reach evaluation bridge at {args.eval_endpoint}")
 
-    print(f"\nEvaluating over {args.eval_episodes} episodes...")
-    mean_reward, std_reward = evaluate_policy(model, eval_env, n_eval_episodes=args.eval_episodes)
-    print(f"Mean reward: {mean_reward:.3f} +/- {std_reward:.3f}")
+        if resume_path:
+            print(f"Loading checkpoint: {resume_path}")
+            model = MaskablePPO.load(
+                str(resume_path),
+                device=args.device,
+                tensorboard_log=log_dir,
+                verbose=1,
+            )
+            validate_exact_action_space(model.action_space)
+            validate_model_preprocessing(model)
+            _validate_resume_hyperparameters(model, args)
+            start_timesteps = int(model.num_timesteps)
+        config["episode_seed_strategy"] = (
+            "base_plus_rank_stride_plus_checkpoint_timesteps_v1"
+        )
+        config["episode_seed_offset"] = start_timesteps
 
-    eval_env.close()
-    print("\nDone!")
+        model_holder: list[Any] = [None]
+        league = None
+
+        def load_league_model(path):
+            loaded = MaskablePPO.load(str(path), device=args.device)
+            validate_exact_action_space(loaded.action_space)
+            validate_model_preprocessing(loaded)
+            return PreprocessedPolicyAdapter(loaded)
+
+        def selection_logger(phase: str):
+            def record(entry, episode):
+                current_model = model_holder[0]
+                artifacts.record_league_selection(
+                    timesteps=int(current_model.num_timesteps) if current_model else 0,
+                    episode=episode,
+                    opponent_id=entry.opponent_id,
+                    category=entry.category,
+                    checkpoint_step=entry.checkpoint_step,
+                    phase=phase,
+                )
+            return record
+
+        if args.opponent == "self_play":
+            league = CheckpointLeague(
+                os.path.join(run_dir, "league"),
+                seed=args.seed + 20_000_000,
+                model_loader=load_league_model,
+                max_recent=args.league_max_recent,
+                max_historical=args.league_max_historical,
+                max_loaded_models=args.league_model_cache,
+                initial_weight=args.league_initial_weight,
+                recent_weight=args.league_recent_weight,
+                historical_weight=args.league_historical_weight,
+            )
+            train_opponent = LeagueSelfPlayOpponent(
+                league, on_selection=selection_logger("train")
+            )
+            eval_opponent = (
+                LeagueSelfPlayOpponent(
+                    league, on_selection=selection_logger("evaluation")
+                )
+                if eval_opponent_name == "self_play"
+                else eval_opponent_name
+            )
+        else:
+            train_opponent = args.opponent
+            eval_opponent = eval_opponent_name
+
+        def make_env(
+            *,
+            rank: int,
+            endpoint: str | None = None,
+            environment_backend: str = "zmq",
+            evaluation: bool = False,
+        ):
+            def initialize():
+                opponent = eval_opponent if evaluation else train_opponent
+                env = CRForgeEnv(
+                    endpoint=endpoint or "tcp://localhost:9876",
+                    blue_deck=list(deck_profile.simulator_card_ids),
+                    red_deck=list(deck_profile.simulator_card_ids),
+                    ticks_per_step=args.ticks_per_step,
+                    opponent=opponent,
+                    binary_obs=binary_observations,
+                    backend=environment_backend,
+                )
+                episode_seed = derive_episode_seed(
+                    eval_seed if evaluation else args.seed,
+                    rank=rank,
+                    checkpoint_timesteps=start_timesteps,
+                )
+                env = DeterministicEpisodeSeedWrapper(env, episode_seed)
+                env = EpisodeStatsWrapper(env)
+                if evaluation:
+                    env = Monitor(env)
+                if not binary_observations:
+                    env = FlattenedObsWrapper(env)
+                env = StaticObservationPreprocessingWrapper(env)
+                env = ExactDiscreteActionWrapper(env)
+                env.action_space.seed(episode_seed)
+                env.observation_space.seed(episode_seed)
+                return env
+            return initialize
+
+        if args.jpype:
+            if args.num_envs > 1:
+                from crforge_gym import ThreadedJPypeVecEnv
+                train_env = ThreadedJPypeVecEnv(
+                    [
+                        make_env(rank=rank, environment_backend="jpype")
+                        for rank in range(args.num_envs)
+                    ]
+                )
+            else:
+                train_env = make_env(rank=0, environment_backend="jpype")()
+            if evaluation_requested:
+                eval_env = make_env(
+                    rank=10_000, environment_backend="jpype", evaluation=True
+                )()
+        elif args.num_envs > 1:
+            train_env = SubprocVecEnv(
+                [
+                    make_env(
+                        rank=rank,
+                        endpoint=f"tcp://localhost:{args.base_port + rank}",
+                    )
+                    for rank in range(args.num_envs)
+                ]
+            )
+            if evaluation_requested:
+                eval_env = make_env(
+                    rank=10_000,
+                    endpoint=f"tcp://localhost:{args.base_port + args.num_envs}",
+                    evaluation=True,
+                )()
+        else:
+            train_env = make_env(rank=0, endpoint=args.endpoint)()
+            if evaluation_requested and args.eval_endpoint:
+                eval_env = make_env(
+                    rank=10_000, endpoint=args.eval_endpoint, evaluation=True
+                )()
+            elif evaluation_requested:
+                eval_env = train_env
+
+        if model is not None:
+            model.set_env(train_env)
+        else:
+            model = MaskablePPO(
+                "MlpPolicy",
+                train_env,
+                policy_kwargs={"net_arch": args.net_arch},
+                learning_rate=args.learning_rate,
+                n_steps=args.n_steps,
+                batch_size=args.batch_size,
+                n_epochs=args.n_epochs,
+                gamma=args.gamma,
+                gae_lambda=args.gae_lambda,
+                clip_range=args.clip_range,
+                ent_coef=args.ent_coef,
+                vf_coef=args.vf_coef,
+                max_grad_norm=args.max_grad_norm,
+                seed=args.seed,
+                verbose=1,
+                tensorboard_log=log_dir,
+                device=args.device,
+            )
+
+        validate_exact_action_space(model.action_space)
+        if not resume_path:
+            tag_model_preprocessing(model)
+        validate_model_preprocessing(model)
+        model_holder[0] = model
+        start_timesteps = int(model.num_timesteps)
+        artifacts.initialize(
+            config,
+            resume_from=resume_path,
+            start_timesteps=start_timesteps,
+        )
+        initialized_artifacts = True
+        if league is not None:
+            league.ensure_initial(model, checkpoint_step=start_timesteps)
+
+        target_timesteps = start_timesteps + args.timesteps
+        callbacks = [
+            EpisodeMetricsCallback(
+                artifacts,
+                target_timesteps=target_timesteps,
+                log_interval_episodes=args.episode_log_interval,
+            ),
+            StopRequestedCallback(lambda: signal_controller.requested),
+        ]
+        control_callback = TrainingControlCallback(
+            artifacts,
+            TrainingCommandChannel(run_dir),
+        )
+        callbacks.append(control_callback)
+        if args.checkpoint_freq > 0:
+            callbacks.append(
+                PeriodicCheckpointCallback(artifacts, args.checkpoint_freq)
+            )
+        if args.eval_freq > 0:
+            callbacks.append(
+                PeriodicEvaluationCallback(
+                    artifacts,
+                    eval_env,
+                    frequency=args.eval_freq,
+                    episodes=args.eval_episodes,
+                    base_seed=eval_seed + start_timesteps,
+                )
+            )
+        if league is not None:
+            callbacks.append(
+                LeagueSnapshotCallback(league, args.self_play_interval)
+            )
+
+        _ensure_save_parent(save_path)
+        os.makedirs(log_dir, exist_ok=True)
+        print(f"\nRun directory: {run_dir}")
+        print(f"Action schema: {ACTION_SCHEMA}")
+        print(f"Observation preprocessing: {OBSERVATION_PREPROCESSING_SCHEMA}")
+        print(f"Deck profile: {deck_profile.profile_id} ({deck_profile.average_elixir:.3g} elixir)")
+        if deck_profile.known_approximations:
+            print("Deck fidelity note: requested evolution/hero forms use documented base approximations.")
+        print(f"Backend/envs: {backend}/{args.num_envs}")
+        print(f"Opponent: {args.opponent}")
+        print(f"Evaluation opponent: {eval_opponent_name}")
+        print(f"Learning {args.timesteps} additional steps ({start_timesteps} -> >= {target_timesteps})")
+        print(f"Rollout: {args.num_envs} x {args.n_steps} = {args.num_envs * args.n_steps}")
+        print(f"TensorBoard: tensorboard --logdir {log_dir}\n")
+
+        signal_controller.install()
+        training_started = time.time()
+        interrupted = False
+        try:
+            model.learn(
+                total_timesteps=args.timesteps,
+                callback=callbacks,
+                reset_num_timesteps=not bool(resume_path),
+                tb_log_name=os.path.basename(run_dir),
+                progress_bar=args.progress_bar,
+            )
+            interrupted = signal_controller.requested or control_callback.stop_requested
+        except KeyboardInterrupt:
+            interrupted = True
+        finally:
+            signal_controller.restore()
+
+        training_seconds = time.time() - training_started
+        completed_steps = int(model.num_timesteps) - start_timesteps
+        if control_callback.stop_requested:
+            artifacts.finish(
+                "paused",
+                timesteps=int(model.num_timesteps),
+                training_seconds=training_seconds,
+                attempt_steps=completed_steps,
+            )
+            print(
+                "Training paused cleanly; resumable checkpoint: "
+                f"{control_callback.pause_checkpoint}"
+            )
+            return 0
+        if interrupted:
+            checkpoint = artifacts.save_checkpoint(
+                model, timesteps=int(model.num_timesteps), reason="interrupted"
+            )
+            artifacts.finish(
+                "interrupted",
+                timesteps=int(model.num_timesteps),
+                training_seconds=training_seconds,
+                attempt_steps=completed_steps,
+            )
+            print(f"Training interrupted cleanly; resumable checkpoint: {checkpoint}")
+            return 130
+
+        saved_model = artifacts.save_final_model(model, save_path)
+        print(f"Final model: {saved_model}")
+
+        if args.eval_episodes > 0:
+            print(f"Evaluating {args.eval_episodes} deterministic masked episodes...")
+            result = evaluate_maskable_policy(
+                model,
+                eval_env,
+                n_episodes=args.eval_episodes,
+                base_seed=eval_seed + 1_000_000_000 + start_timesteps,
+            )
+            artifacts.record_evaluation(timesteps=int(model.num_timesteps), result=result)
+            print(
+                f"Evaluation reward: {result.mean_reward:.3f} +/- {result.std_reward:.3f}; "
+                f"win={result.win_rate:.1%}"
+            )
+
+        artifacts.finish(
+            "completed",
+            timesteps=int(model.num_timesteps),
+            training_seconds=training_seconds,
+            attempt_steps=completed_steps,
+        )
+        throughput = completed_steps / training_seconds if training_seconds > 0 else 0.0
+        print(f"Training completed in {training_seconds:.1f}s ({throughput:.0f} steps/s)")
+        return 0
+    except Exception as exc:
+        if initialized_artifacts:
+            elapsed = time.time() - training_started if training_started else 0.0
+            current_steps = int(model.num_timesteps) if model is not None else start_timesteps
+            checkpoint_error = None
+            if model is not None:
+                try:
+                    artifacts.save_checkpoint(
+                        model, timesteps=current_steps, reason="failed"
+                    )
+                except Exception as save_exc:  # Preserve the original training failure.
+                    checkpoint_error = f"; failed checkpoint: {type(save_exc).__name__}: {save_exc}"
+            artifacts.finish(
+                "failed",
+                timesteps=current_steps,
+                training_seconds=elapsed,
+                attempt_steps=max(0, current_steps - start_timesteps),
+                error=f"{type(exc).__name__}: {exc}{checkpoint_error or ''}",
+            )
+        raise
+    finally:
+        signal_controller.restore()
+        if eval_env is not None and eval_env is not train_env:
+            eval_env.close()
+        if train_env is not None:
+            train_env.close()
+        _terminate_processes(server_processes)
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

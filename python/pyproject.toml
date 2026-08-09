@@ -35,9 +35,12 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["crforge_gym*", "nextocr_gym*"]
+include = ["crforge_gym*", "nextocr_fsio*", "nextocr_gym*", "nextocr_manager*"]
 
 [project.urls]
 Homepage = "https://github.com/theohugo/NextoCR"
 Repository = "https://github.com/theohugo/NextoCR"
 Issues = "https://github.com/theohugo/NextoCR/issues"
+
+[project.scripts]
+nextocr-manager = "nextocr_manager.__main__:main"

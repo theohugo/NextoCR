@@ -234,6 +234,9 @@ _OBS_KEYS = [
     "next_card_cost", "next_card_type", "next_card_id",
     "towers", "entities", "num_entities",
     "lane_summary",
+    "observation_schema_version",
+    "hand_card_identities", "next_card_identity", "entity_identities",
+    "hand_allows_enemy_placement",
 ]
 
 
@@ -403,12 +406,20 @@ class SelfPlayOpponent:
         else:
             return None
 
-        action_type = int(action[0])
+        if self._uses_exact_action_schema():
+            from crforge_gym.wrappers import ExactDiscreteActionWrapper
+
+            action_type, hand_idx, zone = ExactDiscreteActionWrapper.decode(action)
+            action_type = int(action_type)
+            hand_idx = int(hand_idx)
+            zone = int(zone)
+        else:
+            action_type = int(action[0])
+            hand_idx = int(action[1])
+            zone = int(action[2])
+
         if action_type == 0:
             return None
-
-        hand_idx = int(action[1])
-        zone = int(action[2])
         x, y = self._MIRRORED_ZONES[zone]
 
         return {"handIndex": hand_idx, "x": x, "y": y}
@@ -418,6 +429,28 @@ class SelfPlayOpponent:
         blue = mirrored_obs.get("bluePlayer", {})  # Actually red's data
         elixir = blue.get("elixir", 0)
         hand = blue.get("hand", [])
+
+        if self._uses_exact_action_schema():
+            from crforge_gym.wrappers import ExactDiscreteActionWrapper
+
+            mask = np.zeros(1 + 4 * NUM_ZONES, dtype=bool)
+            mask[0] = True
+            for hand_index in range(4):
+                card = hand[hand_index] if hand_index < len(hand) else {}
+                cost = card.get("cost", 99)
+                if not 0 < cost <= elixir:
+                    continue
+                zone_count = (
+                    NUM_ZONES
+                    if card.get(
+                        "allowsEnemyPlacement",
+                        card.get("type", "TROOP") == "SPELL",
+                    )
+                    else NUM_OWN_HALF_ZONES
+                )
+                start = ExactDiscreteActionWrapper.encode(hand_index, 0)
+                mask[start : start + zone_count] = True
+            return mask
 
         action_type_mask = np.array([True, True])
         hand_mask = np.array([True, True, True, True])
@@ -438,6 +471,11 @@ class SelfPlayOpponent:
             zone_mask[NUM_OWN_HALF_ZONES:] = False
 
         return np.concatenate([action_type_mask, hand_mask, zone_mask])
+
+    def _uses_exact_action_schema(self) -> bool:
+        """Return whether the loaded policy uses NextoCR's 41-action schema."""
+        action_space = getattr(self.model, "action_space", None)
+        return getattr(action_space, "n", None) == 1 + 4 * NUM_ZONES
 
     def _compute_mask_from_flat(self, mirrored_flat: np.ndarray) -> np.ndarray:
         """Compute action mask from mirrored flat observation array."""

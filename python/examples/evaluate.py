@@ -28,6 +28,9 @@ def main():
                         help="Simulation ticks per step (default: 15, matches training)")
     parser.add_argument("--seed", type=int, default=None,
                         help="Random seed for reproducibility")
+    parser.add_argument("--opponent", choices=["noop", "random", "rule_based"],
+                        default="rule_based", help="Evaluation opponent")
+    parser.add_argument("--deck-profile", default="mortar_self_play_v1")
     args = parser.parse_args()
 
     try:
@@ -38,22 +41,33 @@ def main():
         sys.exit(1)
 
     from crforge_gym import CRForgeEnv
-    from crforge_gym.wrappers import ActionMaskedWrapper
+    from crforge_gym.decks import get_deck_profile
+    from crforge_gym.observation_preprocessing import (
+        StaticObservationPreprocessingWrapper,
+        validate_model_preprocessing,
+    )
+    from crforge_gym.training_runtime import validate_exact_action_space
+    from crforge_gym.wrappers import ExactDiscreteActionWrapper
 
     # Load model
     print(f"Loading model from {args.model}...")
     model = MaskablePPO.load(args.model)
+    validate_exact_action_space(model.action_space)
+    validate_model_preprocessing(model)
+    deck = get_deck_profile(args.deck_profile)
 
     # Create environment with action masking
     # binary_obs=True produces flat observations directly (matches training)
-    env = ActionMaskedWrapper(
-        CRForgeEnv(
-            endpoint=args.endpoint,
-            ticks_per_step=args.ticks_per_step,
-            opponent="random",
-            binary_obs=True,
-        )
+    base_env = CRForgeEnv(
+        endpoint=args.endpoint,
+        blue_deck=list(deck.simulator_card_ids),
+        red_deck=list(deck.simulator_card_ids),
+        ticks_per_step=args.ticks_per_step,
+        opponent=args.opponent,
+        binary_obs=True,
     )
+    env = StaticObservationPreprocessingWrapper(base_env)
+    env = ExactDiscreteActionWrapper(env)
 
     print(f"\nRunning {args.episodes} evaluation episodes...\n")
 
@@ -95,15 +109,21 @@ def main():
             red_crowns = last_raw.get("redPlayer", {}).get("crowns", 0)
             game_time = last_raw.get("gameTimeSeconds", 0)
 
-        if blue_crowns > red_crowns:
+        canonical_outcome = info.get("game_outcome", "unknown")
+        if canonical_outcome == "win":
             outcome = "WIN"
             wins += 1
-        elif red_crowns > blue_crowns:
+        elif canonical_outcome == "loss":
             outcome = "LOSS"
             losses += 1
-        else:
+        elif canonical_outcome == "draw":
             outcome = "DRAW"
             draws += 1
+        else:
+            raise RuntimeError(
+                "Terminal transition is missing a canonical game_outcome: "
+                f"{canonical_outcome!r}"
+            )
 
         total_rewards.append(episode_reward)
         total_steps.append(steps)

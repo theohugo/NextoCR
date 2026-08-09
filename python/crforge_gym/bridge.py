@@ -13,6 +13,65 @@ import numpy as np
 import zmq
 
 
+_BINARY_OUTCOMES = {
+    0: "ONGOING",
+    1: "BLUE_WIN",
+    2: "RED_WIN",
+    3: "DRAW",
+}
+
+
+def _decode_binary_step(raw: bytes):
+    """Decode the append-only binary step protocol, including its outcome trailer."""
+    from crforge_gym.env import OBS_SIZE, OBS_V1_SIZE
+
+    if len(raw) < 12:
+        raise RuntimeError(f"Binary step response is too short: {len(raw)} bytes")
+
+    blue_reward, red_reward = struct.unpack_from("<ff", raw, 0)
+    terminated = raw[8] != 0
+    truncated = raw[9] != 0
+    blue_action_failed = raw[10] != 0
+    red_action_failed = raw[11] != 0
+
+    observation_floats = None
+    outcome = None
+    for candidate in (OBS_SIZE, OBS_V1_SIZE):
+        observation_end = 12 + candidate * 4
+        if len(raw) == observation_end + 4:
+            outcome_code = struct.unpack_from("<i", raw, observation_end)[0]
+            if outcome_code not in _BINARY_OUTCOMES:
+                raise RuntimeError(f"Unknown binary game outcome code: {outcome_code}")
+            observation_floats = candidate
+            outcome = _BINARY_OUTCOMES[outcome_code]
+            break
+        if len(raw) == observation_end:
+            # Compatibility with a bridge predating the canonical outcome trailer.
+            observation_floats = candidate
+            outcome = "UNKNOWN" if terminated or truncated else "ONGOING"
+            break
+
+    if observation_floats is None:
+        raise RuntimeError(f"Unsupported binary step response size: {len(raw)} bytes")
+
+    obs = np.frombuffer(
+        raw,
+        dtype=np.float32,
+        count=observation_floats,
+        offset=12,
+    ).copy()
+    return (
+        obs,
+        blue_reward,
+        red_reward,
+        terminated,
+        truncated,
+        blue_action_failed,
+        red_action_failed,
+        outcome,
+    )
+
+
 class BridgeClient:
     """ZMQ PAIR socket client that connects to the CRForge bridge server.
 
@@ -74,7 +133,7 @@ class BridgeClient:
             seed: optional seed override for deterministic deck shuffling
 
         Returns:
-            In binary mode: flat float32 numpy array (1079 values).
+            In binary mode: flat float32 numpy array sized by the bridge observation schema.
             In JSON mode: raw observation dict from server.
         """
         data = {}
@@ -95,12 +154,12 @@ class BridgeClient:
         self,
         blue_action: dict | None = None,
         red_action: dict | None = None,
-    ) -> dict[str, Any] | tuple[np.ndarray, float, float, bool, bool, bool, bool]:
+    ) -> dict[str, Any] | tuple[np.ndarray, float, float, bool, bool, bool, bool, str]:
         """Submit actions for both players and advance the simulation.
 
         Returns:
             In binary mode: tuple of (obs_array, blue_reward, red_reward,
-                terminated, truncated, blue_action_failed, red_action_failed).
+                terminated, truncated, blue_action_failed, red_action_failed, outcome).
             In JSON mode: raw step result dict from server.
         """
         self.send(
@@ -113,14 +172,7 @@ class BridgeClient:
 
         if self.binary_obs:
             raw = self.socket.recv()
-            # Header: 2 floats (rewards) + 4 bytes (flags) = 12 bytes
-            blue_reward, red_reward = struct.unpack_from("<ff", raw, 0)
-            terminated = raw[8] != 0
-            truncated = raw[9] != 0
-            blue_action_failed = raw[10] != 0
-            red_action_failed = raw[11] != 0
-            obs = np.frombuffer(raw, dtype=np.float32, offset=12).copy()
-            return obs, blue_reward, red_reward, terminated, truncated, blue_action_failed, red_action_failed
+            return _decode_binary_step(raw)
 
         response = self.receive()
         if response.get("type") == "error":

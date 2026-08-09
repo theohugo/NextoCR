@@ -2,10 +2,12 @@
 
 import numpy as np
 import pytest
+from gymnasium import spaces
 
 from crforge_gym import CRForgeEnv
 from crforge_gym.env import OBS_SIZE
 from crforge_gym.opponents import SelfPlayOpponent
+from crforge_gym.wrappers import ExactDiscreteActionWrapper
 
 
 class _FakeBinaryClient:
@@ -39,6 +41,43 @@ def test_binary_self_play_fails_instead_of_using_the_blue_hand():
 
     with pytest.raises(ValueError, match="red hand"):
         opponent.act(None, obs_flat=np.zeros(OBS_SIZE, dtype=np.float32))
+
+
+def test_json_self_play_supports_exact_discrete_action_schema():
+    class _ExactModel:
+        action_space = spaces.Discrete(41)
+
+        def __init__(self):
+            self.last_mask = None
+
+        def predict(self, obs, *, action_masks, deterministic):
+            self.last_mask = action_masks
+            return ExactDiscreteActionWrapper.encode(0, 9), None
+
+    model = _ExactModel()
+    opponent = SelfPlayOpponent(model=model)
+    raw_obs = {
+        "bluePlayer": {"elixir": 0.0, "hand": [], "towers": []},
+        "redPlayer": {
+            "elixir": 4.0,
+            "hand": [
+                {"cost": 2, "type": "SPELL", "allowsEnemyPlacement": True},
+                {"cost": 5, "type": "TROOP"},
+                {"cost": 2, "type": "SPELL", "allowsEnemyPlacement": False},
+                {"cost": 0, "type": "TROOP"},
+            ],
+            "towers": [],
+        },
+        "entities": [],
+    }
+
+    action = opponent.act(raw_obs)
+
+    assert action == {"handIndex": 0, "x": 9.0, "y": 11.5}
+    assert model.last_mask[ExactDiscreteActionWrapper.encode(0, 9)]
+    assert not model.last_mask[ExactDiscreteActionWrapper.encode(1, 0)]
+    assert model.last_mask[ExactDiscreteActionWrapper.encode(2, 6)]
+    assert not model.last_mask[ExactDiscreteActionWrapper.encode(2, 7)]
 
 
 def test_rule_based_opponent_replays_choices_after_same_seed_reset():

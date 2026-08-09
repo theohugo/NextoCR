@@ -23,13 +23,14 @@ Placement zones (blue's perspective):
     9: SPELL_CENTER  (9.0, 20.5)  - spell on enemy center
 
 Observation space:
-  Binary mode (default): flat Box(shape=(1079,)) float32 vector.
+  Binary mode (default): flat Box(shape=(1153,)) float32 V2 vector.
   JSON mode: Dict with structured game state arrays (all float32 for SB3 compatibility).
 
 Default ticks_per_step=6 gives ~3.33 decisions/second (~600 steps per 3-min game).
 Use ticks_per_step=1 for fine-grained control (20 decisions/sec, ~3600 steps/game).
 """
 
+import zlib
 from typing import Any
 
 import gymnasium as gym
@@ -55,11 +56,24 @@ ENTITY_FEATURES = 16
 # Penalty applied when the agent submits an action that fails (not enough elixir, etc.)
 INVALID_ACTION_PENALTY = -0.01
 
-# Max card index value (upper bound for observation space, can grow with new cards)
-MAX_CARD_INDEX = 200
+# Legacy registry indices are insertion-ordered and currently span 240 cards. Keep a bounded growth
+# margin; stable identities below are the cross-version card identity contract.
+MAX_CARD_INDEX = 4095
 
-# Total size of the flat observation vector
-OBS_SIZE = 1079
+# Versioned observation contract. V2 preserves all 1079 V1 floats at their original offsets and
+# appends stable, normalized card/entity identities.
+OBSERVATION_SCHEMA_VERSION = 2
+OBS_V1_SIZE = 1079
+IDX_OBSERVATION_SCHEMA_VERSION = OBS_V1_SIZE
+IDX_HAND_IDENTITIES_START = IDX_OBSERVATION_SCHEMA_VERSION + 1
+IDX_NEXT_CARD_IDENTITY = IDX_HAND_IDENTITIES_START + 4
+IDX_ENTITY_IDENTITIES_START = IDX_NEXT_CARD_IDENTITY + 1
+IDX_HAND_ALLOWS_ENEMY_PLACEMENT_START = IDX_ENTITY_IDENTITIES_START + MAX_ENTITIES
+OBS_SIZE = IDX_HAND_ALLOWS_ENEMY_PLACEMENT_START + 4
+
+# Stable identities are 1 + the low 24 bits of CRC32(namespace:key). Integer zero is reserved for
+# padding, unknown values, or catalog collisions. Dividing by 2^24 keeps MLP inputs in [0, 1].
+STABLE_ID_MAX = 1 << 24
 
 # Strategic placement zones: (x, y) in arena coordinates.
 # Zones 0-6 are on blue's own half (troops/buildings).
@@ -113,6 +127,12 @@ def _build_observation_space() -> spaces.Dict:
             "frame": spaces.Box(low=0.0, high=600000.0, shape=(1,), dtype=np.float32),
             "game_time": spaces.Box(low=0.0, high=600.0, shape=(1,), dtype=np.float32),
             "is_overtime": spaces.Box(low=0.0, high=1.0, shape=(1,), dtype=np.float32),
+            "observation_schema_version": spaces.Box(
+                low=1.0,
+                high=float(OBSERVATION_SCHEMA_VERSION),
+                shape=(1,),
+                dtype=np.float32,
+            ),
             # Per-player state (index 0 = controlled player, index 1 = opponent)
             "elixir": spaces.Box(low=0.0, high=10.0, shape=(2,), dtype=np.float32),
             "crowns": spaces.Box(low=0.0, high=3.0, shape=(2,), dtype=np.float32),
@@ -121,10 +141,19 @@ def _build_observation_space() -> spaces.Dict:
             "hand_types": spaces.Box(low=0.0, high=2.0, shape=(4,), dtype=np.float32),
             # A1: Card identity -- 0-based index into card vocabulary
             "hand_card_ids": spaces.Box(low=-1.0, high=float(MAX_CARD_INDEX), shape=(4,), dtype=np.float32),
+            "hand_card_identities": spaces.Box(
+                low=0.0, high=1.0, shape=(4,), dtype=np.float32
+            ),
+            "hand_allows_enemy_placement": spaces.Box(
+                low=0.0, high=1.0, shape=(4,), dtype=np.float32
+            ),
             # Next card
             "next_card_cost": spaces.Box(low=0.0, high=1.0, shape=(1,), dtype=np.float32),
             "next_card_type": spaces.Box(low=0.0, high=2.0, shape=(1,), dtype=np.float32),
             "next_card_id": spaces.Box(low=-1.0, high=float(MAX_CARD_INDEX), shape=(1,), dtype=np.float32),
+            "next_card_identity": spaces.Box(
+                low=0.0, high=1.0, shape=(1,), dtype=np.float32
+            ),
             # Towers: 6 towers (3 per team) x [hp_fraction, x_norm, y_norm, alive]
             "towers": spaces.Box(low=0.0, high=1.0, shape=(6, 4), dtype=np.float32),
             # Entities: MAX_ENTITIES x ENTITY_FEATURES
@@ -132,6 +161,9 @@ def _build_observation_space() -> spaces.Dict:
             #   attack_cooldown_readiness, is_attacking, has_target,
             #   stunned, slowed, raged, frozen, poisoned, lifetime_fraction
             "entities": spaces.Box(low=0.0, high=5.0, shape=(MAX_ENTITIES, ENTITY_FEATURES), dtype=np.float32),
+            "entity_identities": spaces.Box(
+                low=0.0, high=1.0, shape=(MAX_ENTITIES,), dtype=np.float32
+            ),
             "num_entities": spaces.Box(low=0.0, high=float(MAX_ENTITIES), shape=(1,), dtype=np.float32),
             # Pre-computed lane summary: aggregated spatial features the MLP can
             # use directly for reactive placement decisions.
@@ -144,6 +176,60 @@ _CARD_TYPE_MAP = {"TROOP": 0, "SPELL": 1, "BUILDING": 2}
 _TEAM_MAP = {"BLUE": 0, "RED": 1}
 _ENTITY_TYPE_MAP = {"TROOP": 0, "BUILDING": 1, "TOWER": 2, "PROJECTILE": 3, "SPELL": 4}
 _MOVEMENT_TYPE_MAP = {"GROUND": 0, "AIR": 1, "BUILDING": 2}
+
+_BLUE_OUTCOME_LABELS = {
+    "BLUE_WIN": "win",
+    "RED_WIN": "loss",
+    "DRAW": "draw",
+    "ONGOING": "ongoing",
+}
+
+
+def _blue_game_outcome(
+    canonical_outcome: str | None,
+    *,
+    terminated: bool = False,
+    truncated: bool = False,
+) -> str:
+    """Translate the engine outcome to the controlled blue player's perspective."""
+    label = _BLUE_OUTCOME_LABELS.get(str(canonical_outcome or "").upper())
+    if label is None:
+        return "unknown" if terminated or truncated else "ongoing"
+    if label == "ongoing" and (terminated or truncated):
+        return "unknown"
+    return label
+
+
+def _stable_identity_id(namespace: str, key: str | None) -> int:
+    """Match ObservationIdentity.java's exact, float32-safe CRC24 identity contract."""
+    if not namespace or not key:
+        return 0
+    checksum = zlib.crc32(f"{namespace}:{key}".encode("utf-8"))
+    return 1 + (checksum & 0x00FF_FFFF)
+
+
+def _normalized_identity(identity_id: int) -> np.float32:
+    if identity_id <= 0 or identity_id > STABLE_ID_MAX:
+        return np.float32(0.0)
+    return np.float32(identity_id / STABLE_ID_MAX)
+
+
+def _coerce_binary_observation(observation: np.ndarray) -> np.ndarray:
+    """Return a V2-shaped observation, padding a legacy V1 server with unknown identities."""
+    flat = np.asarray(observation, dtype=np.float32)
+    if flat.ndim != 1:
+        raise ValueError(f"Binary observation must be flat, got shape {flat.shape}")
+    if flat.size == OBS_SIZE:
+        return flat
+    if flat.size == OBS_V1_SIZE:
+        upgraded = np.zeros(OBS_SIZE, dtype=np.float32)
+        upgraded[:OBS_V1_SIZE] = flat
+        upgraded[IDX_OBSERVATION_SCHEMA_VERSION] = 1.0
+        return upgraded
+    raise ValueError(
+        f"Unsupported binary observation size {flat.size}; "
+        f"expected V1={OBS_V1_SIZE} or V2={OBS_SIZE}"
+    )
 
 
 def _tower_to_array(tower: dict) -> np.ndarray:
@@ -175,6 +261,9 @@ def parse_observation(obs_raw: dict) -> dict[str, np.ndarray]:
     frame = np.array([obs_raw.get("frame", 0)], dtype=np.float32)
     game_time = np.array([obs_raw.get("gameTimeSeconds", 0.0)], dtype=np.float32)
     is_overtime = np.array([1.0 if obs_raw.get("isOvertime", False) else 0.0], dtype=np.float32)
+    observation_schema_version = np.array(
+        [float(obs_raw.get("schemaVersion", 1))], dtype=np.float32
+    )
 
     # Player state (index 0 = blue/controlled, index 1 = red/opponent)
     elixir = np.array(
@@ -189,10 +278,19 @@ def parse_observation(obs_raw: dict) -> dict[str, np.ndarray]:
     hand_costs = np.zeros(4, dtype=np.float32)
     hand_types = np.zeros(4, dtype=np.float32)
     hand_card_ids = np.full(4, -1.0, dtype=np.float32)
+    hand_card_identities = np.zeros(4, dtype=np.float32)
+    hand_allows_enemy_placement = np.zeros(4, dtype=np.float32)
     for i, card in enumerate(hand[:4]):
         hand_costs[i] = card.get("cost", 0) / 10.0
         hand_types[i] = float(_CARD_TYPE_MAP.get(card.get("type", "TROOP"), 0))
         hand_card_ids[i] = float(card.get("cardIndex", -1))
+        identity_id = int(
+            card.get("identityId", _stable_identity_id("card", card.get("id")))
+        )
+        hand_card_identities[i] = _normalized_identity(identity_id)
+        hand_allows_enemy_placement[i] = np.float32(
+            1.0 if card.get("allowsEnemyPlacement", False) else 0.0
+        )
 
     next_card = blue.get("nextCard")
     if next_card:
@@ -201,10 +299,19 @@ def parse_observation(obs_raw: dict) -> dict[str, np.ndarray]:
             [float(_CARD_TYPE_MAP.get(next_card.get("type", "TROOP"), 0))], dtype=np.float32
         )
         next_card_id = np.array([float(next_card.get("cardIndex", -1))], dtype=np.float32)
+        next_identity_id = int(
+            next_card.get(
+                "identityId", _stable_identity_id("card", next_card.get("id"))
+            )
+        )
+        next_card_identity = np.array(
+            [_normalized_identity(next_identity_id)], dtype=np.float32
+        )
     else:
         next_card_cost = np.zeros(1, dtype=np.float32)
         next_card_type = np.zeros(1, dtype=np.float32)
         next_card_id = np.full(1, -1.0, dtype=np.float32)
+        next_card_identity = np.zeros(1, dtype=np.float32)
 
     # Towers: [hp_fraction, x_norm, y_norm, alive]
     # Order: blue crown, blue princess L, blue princess R, red crown, red princess L, red princess R
@@ -219,9 +326,14 @@ def parse_observation(obs_raw: dict) -> dict[str, np.ndarray]:
     # Entities -- spatial coords normalized to [0, 1], with combat state and effects
     entities_raw = obs_raw.get("entities", [])
     entities_array = np.zeros((MAX_ENTITIES, ENTITY_FEATURES), dtype=np.float32)
+    entity_identities = np.zeros(MAX_ENTITIES, dtype=np.float32)
     num_entities = min(len(entities_raw), MAX_ENTITIES)
     for i in range(num_entities):
         e = entities_raw[i]
+        identity_id = int(
+            e.get("identityId", _stable_identity_id("entity", e.get("name")))
+        )
+        entity_identities[i] = _normalized_identity(identity_id)
         max_hp = e.get("maxHp", 1)
         if max_hp == 0:
             max_hp = 1
@@ -302,16 +414,21 @@ def parse_observation(obs_raw: dict) -> dict[str, np.ndarray]:
         "frame": frame,
         "game_time": game_time,
         "is_overtime": is_overtime,
+        "observation_schema_version": observation_schema_version,
         "elixir": elixir,
         "crowns": crowns,
         "hand_costs": hand_costs,
         "hand_types": hand_types,
         "hand_card_ids": hand_card_ids,
+        "hand_card_identities": hand_card_identities,
+        "hand_allows_enemy_placement": hand_allows_enemy_placement,
         "next_card_cost": next_card_cost,
         "next_card_type": next_card_type,
         "next_card_id": next_card_id,
+        "next_card_identity": next_card_identity,
         "towers": towers_array,
         "entities": entities_array,
+        "entity_identities": entity_identities,
         "num_entities": np.array([num_entities], dtype=np.float32),
         "lane_summary": lane_summary,
     }
@@ -339,7 +456,10 @@ class CRForgeEnv(gym.Env):
         backend: "zmq" (default) for ZMQ bridge, "jpype" for in-process JVM via JPype
     """
 
-    metadata = {"render_modes": []}
+    metadata = {
+        "render_modes": [],
+        "observation_schema_version": OBSERVATION_SCHEMA_VERSION,
+    }
 
     def __init__(
         self,
@@ -421,27 +541,35 @@ class CRForgeEnv(gym.Env):
         options: dict | None = None,
     ) -> tuple[np.ndarray | dict[str, np.ndarray], dict]:
         super().reset(seed=seed)
-        self._rng = np.random.default_rng(seed)
+        if seed is None:
+            effective_seed = int(
+                self.np_random.integers(0, np.iinfo(np.int64).max, dtype=np.int64)
+            )
+        else:
+            # Preserve the explicit initial seed without consuming the derived Gym RNG sequence.
+            effective_seed = int(seed)
+        self._rng = np.random.default_rng(effective_seed)
         # RuleBasedOpponent stores the generator it was constructed with. Recreate it so repeated
         # resets with the same seed replay the same heuristic choices instead of continuing the
         # previous episode's random stream.
         self._rule_based_opponent = None
 
         # Forward seed to Java server for deterministic deck shuffling
-        if seed is not None:
-            self._init_seed = seed
+        self._init_seed = effective_seed
 
         self._ensure_connected()
-        result = self._client.reset(seed=seed)
+        result = self._client.reset(seed=effective_seed)
+        info = {"episode_seed": effective_seed, "game_outcome": "ongoing"}
 
         if self.binary_obs:
+            result = _coerce_binary_observation(result)
             self._last_obs_flat = result
             self._last_obs_raw = None
-            return result, {}
+            return result, info
         else:
             self._last_obs_raw = result
             self._last_obs_flat = None
-            return self._parse_observation(result), {}
+            return self._parse_observation(result), info
 
     def step(
         self, action: np.ndarray
@@ -453,11 +581,38 @@ class CRForgeEnv(gym.Env):
         red_action = self._get_opponent_action()
 
         if self.binary_obs:
-            (obs, blue_reward, _red_reward, terminated, truncated,
-             blue_action_failed, _red_action_failed) = self._client.step(
+            step_result = self._client.step(
                 blue_action=blue_action,
                 red_action=red_action,
             )
+            if len(step_result) == 8:
+                (
+                    obs,
+                    blue_reward,
+                    _red_reward,
+                    terminated,
+                    truncated,
+                    blue_action_failed,
+                    _red_action_failed,
+                    canonical_outcome,
+                ) = step_result
+            elif len(step_result) == 7:
+                # Compatibility with custom/legacy bridge clients. Never infer outcome from reward.
+                (
+                    obs,
+                    blue_reward,
+                    _red_reward,
+                    terminated,
+                    truncated,
+                    blue_action_failed,
+                    _red_action_failed,
+                ) = step_result
+                canonical_outcome = None
+            else:
+                raise RuntimeError(
+                    f"Unsupported binary step tuple length: {len(step_result)}"
+                )
+            obs = _coerce_binary_observation(obs)
             self._last_obs_flat = obs
             self._last_obs_raw = None
 
@@ -465,7 +620,13 @@ class CRForgeEnv(gym.Env):
             if blue_action_failed:
                 reward += self.invalid_action_penalty
 
-            info = {}
+            info = {
+                "game_outcome": _blue_game_outcome(
+                    canonical_outcome,
+                    terminated=terminated,
+                    truncated=truncated,
+                )
+            }
             if blue_action_failed:
                 info["action_failed"] = True
 
@@ -492,7 +653,13 @@ class CRForgeEnv(gym.Env):
             if blue_action_failed:
                 reward += self.invalid_action_penalty
 
-            info = {}
+            info = {
+                "game_outcome": _blue_game_outcome(
+                    result.get("outcome"),
+                    terminated=terminated,
+                    truncated=truncated,
+                )
+            }
             if blue_action_failed:
                 info["action_failed"] = True
 
