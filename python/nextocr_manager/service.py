@@ -462,6 +462,8 @@ class ManagerService:
             "--seed", str(config["seed"]),
             "--eval-seed", str(config["eval_seed"]),
             "--deck-profile", config["deck_profile"],
+            "--deck-mode", config.get("deck_mode", "random"),
+            "--elixir-shaping", str(config.get("elixir_shaping", 12.0)),
             "--opponent", config["opponent"],
             "--eval-opponent", config["evaluation_opponent"],
             "--ticks-per-step", str(config["ticks_per_step"]),
@@ -489,6 +491,10 @@ class ManagerService:
             "--net-arch", ",".join(str(width) for width in config["net_arch"]),
             "--device", config["device"],
         ]
+        if config.get("match_memory", True):
+            command.append("--match-memory")
+        if config.get("auto_scale", True):
+            command.append("--auto-scale")
         if not config["deterministic_torch"]:
             command.append("--no-deterministic-torch")
         if resume_from is not None:
@@ -500,6 +506,13 @@ class ManagerService:
             "seed": 42,
             "eval_seed": 10_000_042,
             "deck_profile": "mortar_self_play_v1",
+            # A fresh coherent deck every episode, with within-match memory and
+            # elixir-trade shaping: a fixed deck produced a specialist that beat
+            # its own league while still losing to a scripted bot.
+            "deck_mode": "random",
+            "match_memory": True,
+            "elixir_shaping": 12.0,
+            "auto_scale": True,
             "opponent": "self_play",
             "evaluation_opponent": "rule_based",
             "ticks_per_step": 15,
