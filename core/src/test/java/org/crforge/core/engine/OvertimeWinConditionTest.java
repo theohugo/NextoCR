@@ -58,6 +58,13 @@ class OvertimeWinConditionTest {
   }
 
   @Test
+  void initializedMatchHasCanonicalOngoingOutcome() {
+    assertThat(gameState.getOutcome()).isEqualTo(GameOutcome.ONGOING);
+    assertThat(gameState.isGameOver()).isFalse();
+    assertThat(gameState.getWinner()).isNull();
+  }
+
+  @Test
   void regularTime_higherCrownCount_wins() {
     // Blue destroys one red princess tower -> blue has 1 crown, red has 0
     killPrincessTower(Team.RED);
@@ -71,6 +78,8 @@ class OvertimeWinConditionTest {
     assertThat(match.isEnded()).isTrue();
     assertThat(match.getWinner()).isEqualTo(Team.BLUE);
     assertThat(match.isOvertime()).isFalse();
+    assertThat(gameState.getOutcome()).isEqualTo(GameOutcome.BLUE_WIN);
+    assertThat(gameState.isGameOver()).isTrue();
   }
 
   @Test
@@ -114,6 +123,7 @@ class OvertimeWinConditionTest {
     assertThat(engine.isRunning()).isFalse();
     assertThat(match.isEnded()).isTrue();
     assertThat(match.getWinner()).isEqualTo(Team.BLUE);
+    assertThat(gameState.getOutcome()).isEqualTo(GameOutcome.BLUE_WIN);
   }
 
   @Test
@@ -129,6 +139,8 @@ class OvertimeWinConditionTest {
     assertThat(match.isEnded()).isTrue();
     assertThat(match.getWinner()).isNull();
     assertThat(match.isDraw()).isTrue();
+    assertThat(gameState.getOutcome()).isEqualTo(GameOutcome.DRAW);
+    assertThat(gameState.isGameOver()).isTrue();
   }
 
   @Test
@@ -210,6 +222,7 @@ class OvertimeWinConditionTest {
     assertThat(engine.isRunning()).isFalse();
     assertThat(gameState.isGameOver()).isTrue();
     assertThat(gameState.getWinner()).isEqualTo(Team.BLUE);
+    assertThat(gameState.getOutcome()).isEqualTo(GameOutcome.BLUE_WIN);
     assertThat(match.isOvertime()).isFalse();
   }
 }

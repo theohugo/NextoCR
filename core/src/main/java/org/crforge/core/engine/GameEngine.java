@@ -227,7 +227,12 @@ public class GameEngine {
     gameState.processDeaths();
 
     // 13. Check time limit
-    checkTimeLimit();
+    if (gameState.isGameOver()) {
+      // Crown-tower destruction originates in GameState; mirror it into Match/running state.
+      endGame(gameState.getWinner());
+    } else {
+      checkTimeLimit();
+    }
 
     // 14. Increment frame counter
     gameState.incrementFrame();
@@ -326,6 +331,7 @@ public class GameEngine {
   }
 
   private void endGame(Team winner) {
+    gameState.finish(winner);
     running = false;
     if (match != null) {
       if (winner == null) {

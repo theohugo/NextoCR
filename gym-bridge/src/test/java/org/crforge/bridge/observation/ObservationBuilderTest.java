@@ -55,6 +55,7 @@ class ObservationBuilderTest {
   void buildReturnsValidObservation() {
     ObservationDTO obs = ObservationBuilder.build(engine, bluePlayer, redPlayer);
 
+    assertThat(obs.schemaVersion()).isEqualTo(ObservationBuilder.OBSERVATION_SCHEMA_VERSION);
     assertThat(obs.frame()).isZero();
     assertThat(obs.gameTimeSeconds()).isZero();
     assertThat(obs.isOvertime()).isFalse();
@@ -134,6 +135,63 @@ class ObservationBuilderTest {
 
     // Next card should also have a valid index
     assertThat(obs.bluePlayer().nextCard().cardIndex()).isGreaterThanOrEqualTo(0);
+  }
+
+  @Test
+  void handCardsAndEntitiesHaveStableBoundedIdentities() {
+    ObservationDTO obs = ObservationBuilder.build(engine, bluePlayer, redPlayer);
+
+    assertThat(obs.bluePlayer().hand())
+        .allSatisfy(
+            card -> {
+              assertThat(card.identityId()).isBetween(1, ObservationIdentity.MAX_ID);
+              assertThat(card.identityId()).isEqualTo(ObservationIdentity.cardId(card.id()));
+            });
+    assertThat(obs.entities())
+        .allSatisfy(
+            entity -> {
+              assertThat(entity.identityId()).isBetween(1, ObservationIdentity.MAX_ID);
+              assertThat(entity.identityId())
+                  .isEqualTo(ObservationIdentity.entityId(entity.name()));
+            });
+  }
+
+  @Test
+  void currentObservationVocabularyHasNoStableIdentityCollisions() {
+    assertThat(ObservationIdentity.collisionKeys()).isEmpty();
+    assertThat(ObservationIdentity.cardId("not-in-the-card-catalog")).isZero();
+    assertThat(ObservationIdentity.entityId("not-a-runtime-archetype")).isZero();
+  }
+
+  @Test
+  void stableIdentityHashMatchesPythonContract() {
+    assertThat(ObservationIdentity.hash("card", "knight")).isEqualTo(12_097_159);
+    assertThat(ObservationIdentity.hash("card", "fireball")).isEqualTo(243_388);
+    assertThat(ObservationIdentity.hash("card", "barblog")).isEqualTo(12_535_573);
+    assertThat(ObservationIdentity.hash("entity", "Crown Tower")).isEqualTo(14_238_056);
+    assertThat(ObservationIdentity.hash("entity", "Princess Tower")).isEqualTo(5_362_128);
+    assertThat(ObservationIdentity.hash("entity", "Knight")).isEqualTo(15_105_610);
+  }
+
+  @Test
+  void collidingIdentityKeysFallBackToReservedZero() {
+    var vocabulary = new ObservationIdentity.IdentityVocabulary();
+    String first = "collision-test-7WzNsvQCG6el";
+    String second = "collision-test-AANVU3gcqO2S";
+
+    assertThat(ObservationIdentity.hash("entity", first))
+        .isEqualTo(ObservationIdentity.hash("entity", second));
+    assertThat(vocabulary.resolve("entity", first)).isNotZero();
+    assertThat(vocabulary.resolve("entity", second)).isZero();
+    assertThat(vocabulary.resolve("entity", first)).isZero();
+  }
+
+  @Test
+  void allowsEnemyPlacementMatchesEngineCardSemantics() {
+    assertThat(ObservationBuilder.allowsEnemyPlacement(CardRegistry.get("fireball"))).isTrue();
+    assertThat(ObservationBuilder.allowsEnemyPlacement(CardRegistry.get("barblog"))).isFalse();
+    assertThat(ObservationBuilder.allowsEnemyPlacement(CardRegistry.get("miner"))).isTrue();
+    assertThat(ObservationBuilder.allowsEnemyPlacement(CardRegistry.get("knight"))).isFalse();
   }
 
   @Test

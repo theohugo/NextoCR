@@ -70,6 +70,13 @@ class BinaryObservationEncoderTest {
   void encodedObservationHasCorrectSize() {
     byte[] bytes = encoder.encodeObservation(engine, bluePlayer, redPlayer);
     assertThat(bytes.length).isEqualTo(BinaryObservationEncoder.OBS_BYTES);
+    assertThat(BinaryObservationEncoder.V1_OBS_FLOATS).isEqualTo(1079);
+    assertThat(BinaryObservationEncoder.SCHEMA_VERSION_OFFSET).isEqualTo(1079);
+    assertThat(BinaryObservationEncoder.HAND_IDENTITY_OFFSET).isEqualTo(1080);
+    assertThat(BinaryObservationEncoder.NEXT_CARD_IDENTITY_OFFSET).isEqualTo(1084);
+    assertThat(BinaryObservationEncoder.ENTITY_IDENTITY_OFFSET).isEqualTo(1085);
+    assertThat(BinaryObservationEncoder.HAND_ALLOWS_ENEMY_PLACEMENT_OFFSET).isEqualTo(1149);
+    assertThat(BinaryObservationEncoder.OBS_FLOATS).isEqualTo(1153);
   }
 
   @Test
@@ -78,6 +85,8 @@ class BinaryObservationEncoderTest {
         encoder.encodeStepResult(
             engine, bluePlayer, redPlayer, 1.5f, -0.5f, false, false, true, false);
     assertThat(bytes.length).isEqualTo(BinaryObservationEncoder.STEP_RESULT_BYTES);
+    assertThat(BinaryObservationEncoder.STEP_OUTCOME_OFFSET).isEqualTo(4624);
+    assertThat(BinaryObservationEncoder.STEP_RESULT_BYTES).isEqualTo(4628);
   }
 
   @Test
@@ -93,6 +102,7 @@ class BinaryObservationEncoderTest {
     assertThat(bytes[9]).isEqualTo((byte) 0); // truncated
     assertThat(bytes[10]).isEqualTo((byte) 1); // blueActionFailed
     assertThat(bytes[11]).isEqualTo((byte) 0); // redActionFailed
+    assertThat(buf.getInt(BinaryObservationEncoder.STEP_OUTCOME_OFFSET)).isZero(); // ongoing
   }
 
   @Test
@@ -138,6 +148,10 @@ class BinaryObservationEncoderTest {
       assertThat(obs[7 + i]).isCloseTo(card.cost() / 10f, offset(0.01f));
       // hand_card_ids (indices 15-18)
       assertThat(obs[15 + i]).isCloseTo(card.cardIndex(), offset(0.01f));
+      assertThat(obs[BinaryObservationEncoder.HAND_IDENTITY_OFFSET + i])
+          .isEqualTo(card.identityId() / (float) ObservationIdentity.MAX_ID);
+      assertThat(obs[BinaryObservationEncoder.HAND_ALLOWS_ENEMY_PLACEMENT_OFFSET + i])
+          .isEqualTo(card.allowsEnemyPlacement() ? 1f : 0f);
     }
 
     // next_card (indices 19-21)
@@ -145,7 +159,39 @@ class BinaryObservationEncoderTest {
     if (next != null) {
       assertThat(obs[19]).isCloseTo(next.cost() / 10f, offset(0.01f));
       assertThat(obs[21]).isCloseTo(next.cardIndex(), offset(0.01f));
+      assertThat(obs[BinaryObservationEncoder.NEXT_CARD_IDENTITY_OFFSET])
+          .isEqualTo(next.identityId() / (float) ObservationIdentity.MAX_ID);
     }
+  }
+
+  @Test
+  void v2ExtensionEncodesSchemaAndStableBoundedEntityIdentities() {
+    ObservationDTO json = ObservationBuilder.build(engine, bluePlayer, redPlayer);
+    float[] obs = decodeObs(encoder.encodeObservation(engine, bluePlayer, redPlayer));
+
+    assertThat(obs[BinaryObservationEncoder.SCHEMA_VERSION_OFFSET])
+        .isEqualTo(ObservationBuilder.OBSERVATION_SCHEMA_VERSION);
+    for (int i = 0; i < json.entities().size(); i++) {
+      float encoded = obs[BinaryObservationEncoder.ENTITY_IDENTITY_OFFSET + i];
+      assertThat(encoded)
+          .isEqualTo(json.entities().get(i).identityId() / (float) ObservationIdentity.MAX_ID)
+          .isBetween(0f, 1f);
+    }
+    assertThat(obs).doesNotContain(Float.NaN, Float.POSITIVE_INFINITY, Float.NEGATIVE_INFINITY);
+  }
+
+  @Test
+  void placementFlagDistinguishesFireballFromBarbarianBarrel() {
+    bluePlayer.getHand().getCards()[0] = CardRegistry.get("fireball");
+    bluePlayer.getHand().getCards()[1] = CardRegistry.get("barblog");
+
+    ObservationDTO json = ObservationBuilder.build(engine, bluePlayer, redPlayer);
+    float[] obs = decodeObs(encoder.encodeObservation(engine, bluePlayer, redPlayer));
+
+    assertThat(json.bluePlayer().hand().get(0).allowsEnemyPlacement()).isTrue();
+    assertThat(json.bluePlayer().hand().get(1).allowsEnemyPlacement()).isFalse();
+    assertThat(obs[BinaryObservationEncoder.HAND_ALLOWS_ENEMY_PLACEMENT_OFFSET]).isEqualTo(1f);
+    assertThat(obs[BinaryObservationEncoder.HAND_ALLOWS_ENEMY_PLACEMENT_OFFSET + 1]).isZero();
   }
 
   @Test

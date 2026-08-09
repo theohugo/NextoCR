@@ -490,7 +490,13 @@ public class AIGameScreen implements Screen {
       RewardDTO reward = rewardCalculator.computeReward(engine.getGameState());
       StepResultDTO result =
           new StepResultDTO(
-              observation, reward, terminated, truncated, blueActionFailed, redActionFailed);
+              observation,
+              reward,
+              terminated,
+              truncated,
+              engine.getGameState().getOutcome(),
+              blueActionFailed,
+              redActionFailed);
       stepResponseFuture.complete(buildResponseBytes("step_result", result));
     }
     stepResponseFuture = null;

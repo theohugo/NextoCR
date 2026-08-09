@@ -10,6 +10,7 @@ import org.crforge.core.component.Combat;
 import org.crforge.core.component.Health;
 import org.crforge.core.component.Position;
 import org.crforge.core.engine.GameEngine;
+import org.crforge.core.engine.GameOutcome;
 import org.crforge.core.engine.GameState;
 import org.crforge.core.entity.structure.Tower;
 import org.crforge.core.entity.unit.Troop;
@@ -31,6 +32,7 @@ class RewardCalculatorTest {
   private static final float TOWER_DAMAGE_REWARD = 0.005f;
   private static final float CROWN_REWARD = 10.0f;
   private static final float WIN_REWARD = 30.0f;
+  private static final float LOSS_REWARD = -30.0f;
   private static final float DRAW_PENALTY = -10.0f;
 
   private GameEngine engine;
@@ -205,6 +207,61 @@ class RewardCalculatorTest {
     // Total episode reward = chipShaping + DRAW_PENALTY + some more time penalties
     float totalEpisode = chipShaping + DRAW_PENALTY;
     assertThat(totalEpisode).isLessThan(0f);
+  }
+
+  @Test
+  void crownTowerKoPaysCanonicalTerminalRewardExactlyOnce() {
+    Tower redCrown = state.getCrownTower(Team.RED);
+    redCrown.getHealth().takeDamage(100_000);
+    state.processDeaths();
+
+    RewardDTO terminal = calculator.computeReward(state);
+    RewardDTO repeated = calculator.computeReward(state);
+
+    assertThat(state.getOutcome()).isEqualTo(GameOutcome.BLUE_WIN);
+    assertThat(terminal.blue()).isGreaterThan(WIN_REWARD);
+    assertThat(terminal.red()).isLessThan(LOSS_REWARD);
+    assertThat(repeated.blue()).isCloseTo(TIME_PENALTY, offset(1e-6f));
+    assertThat(repeated.red()).isCloseTo(TIME_PENALTY, offset(1e-6f));
+  }
+
+  @Test
+  void crownLeadAtRegulationTimePaysWinAndLossRewards() {
+    Tower redPrincess = state.getPrincessTowers(Team.RED).get(0);
+    redPrincess.getHealth().takeDamage(100_000);
+    state.processDeaths();
+
+    engine.tick(Standard1v1Match.MATCH_DURATION_TICKS + 1);
+    RewardDTO reward = calculator.computeReward(state);
+
+    assertThat(state.getOutcome()).isEqualTo(GameOutcome.BLUE_WIN);
+    assertThat(reward.blue()).isGreaterThan(WIN_REWARD + CROWN_REWARD);
+    assertThat(reward.red()).isLessThan(LOSS_REWARD - CROWN_REWARD);
+  }
+
+  @Test
+  void overtimeHpTiebreakPaysWinAndLossRewards() {
+    state.getPrincessTowers(Team.RED).get(0).getHealth().takeDamage(500);
+
+    engine.tick(
+        Standard1v1Match.MATCH_DURATION_TICKS + Standard1v1Match.OVERTIME_DURATION_TICKS + 1);
+    RewardDTO reward = calculator.computeReward(state);
+
+    assertThat(state.getOutcome()).isEqualTo(GameOutcome.BLUE_WIN);
+    assertThat(reward.blue()).isGreaterThan(WIN_REWARD);
+    assertThat(reward.red()).isLessThan(LOSS_REWARD);
+  }
+
+  @Test
+  void trueDrawPaysBothPlayersDrawPenalty() {
+    engine.tick(
+        Standard1v1Match.MATCH_DURATION_TICKS + Standard1v1Match.OVERTIME_DURATION_TICKS + 1);
+
+    RewardDTO reward = calculator.computeReward(state);
+
+    assertThat(state.getOutcome()).isEqualTo(GameOutcome.DRAW);
+    assertThat(reward.blue()).isLessThanOrEqualTo(DRAW_PENALTY);
+    assertThat(reward.red()).isLessThanOrEqualTo(DRAW_PENALTY);
   }
 
   private Troop createTestTroop(Team team, float x, float y, int hp) {
